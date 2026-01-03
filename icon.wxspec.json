@@ -1,0 +1,77 @@
+{
+  "version": "wx.spec.v1",
+  "id": "partly_cloudy_day_rain",
+  "size_px": 64,
+  "assets": [
+    {
+      "asset_key": "partly_cloudy_day_rain",
+      "asset_hash": 640749320,
+      "type": "image",
+      "size_px": 64,
+      "path": "partly_cloudy_day_rain_64.bin"
+    }
+  ],
+  "layers": [
+    {
+      "z": 0,
+      "asset_key": "partly_cloudy_day_rain",
+      "x": 0,
+      "y": 0,
+      "w": 64,
+      "h": 64,
+      "pivot_x": 32,
+      "pivot_y": 32,
+      "opacity": 255
+    }
+  ],
+  "fx": {
+    "ROTATE": {
+      "enabled": true,
+      "target_z": 0,
+      "speed_dps": 8
+    },
+    "FALL": {
+      "enabled": true,
+      "target_z": 0,
+      "speed_pps": 21
+    },
+    "FLOW_X": {
+      "enabled": false,
+      "target_z": 0,
+      "speed_pps": 0,
+      "range_px": 0
+    },
+    "JITTER": {
+      "enabled": false,
+      "target_z": 0,
+      "amp_px": 0
+    },
+    "DRIFT": {
+      "enabled": false,
+      "target_z": 0,
+      "amp_px": 0,
+      "speed_pps": 0
+    },
+    "TWINKLE": {
+      "enabled": true,
+      "target_z": 0,
+      "period_ms": 700
+    },
+    "FLASH": {
+      "enabled": false,
+      "target_z": 0,
+      "period_ms": 0
+    },
+    "CROSSFADE": {
+      "enabled": false,
+      "target_z": 0,
+      "period_ms": 0
+    },
+    "NEEDLE": {
+      "enabled": false,
+      "target_z": 0,
+      "min_deg": 0,
+      "max_deg": 0
+    }
+  }
+}
