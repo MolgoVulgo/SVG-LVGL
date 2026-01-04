@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List
+import re
+from typing import Dict, Iterable, List, Optional
 
 from pipeline.assets.naming import normalize_asset_key
 from pipeline.hash import fnv1a32
 
-SPEC_VERSION = "wx.spec.v1"
+SPEC_VERSION = 1
+
+_COMPONENT_RE = re.compile(r"^[A-Z0-9_]+$")
+_LAYER_ID_RE = re.compile(r"^[a-z0-9_]+$")
 
 ASSET_TYPES = {"image", "mask", "alpha"}
 
@@ -23,6 +27,12 @@ FX_KEYS = (
     "CROSSFADE",
     "NEEDLE",
 )
+
+
+def spec_id_for_name(name: str) -> int:
+    """Return deterministic spec_id for a normalized name."""
+    normalized = normalize_asset_key(name)
+    return fnv1a32(normalized)
 
 
 @dataclass
@@ -54,180 +64,62 @@ class Asset:
 
 
 @dataclass
-class Layer:
-    z: int
-    asset_key: str
-    x: int
-    y: int
-    w: int
-    h: int
-    pivot_x: int
-    pivot_y: int
-    opacity: int
+class Components:
+    decor: str
+    cover: str
+    particles: str
+    atmos: str
+    event: str
 
     def __post_init__(self) -> None:
-        self.asset_key = normalize_asset_key(self.asset_key)
-        if not (0 <= self.opacity <= 255):
-            raise ValueError("opacity must be 0..255")
+        for field_name in ("decor", "cover", "particles", "atmos", "event"):
+            value = getattr(self, field_name)
+            if not _COMPONENT_RE.match(value):
+                raise ValueError(f"invalid component {field_name}: {value!r}")
 
     def to_dict(self) -> dict:
         return {
-            "z": self.z,
-            "asset_key": self.asset_key,
-            "x": self.x,
-            "y": self.y,
-            "w": self.w,
-            "h": self.h,
-            "pivot_x": self.pivot_x,
-            "pivot_y": self.pivot_y,
-            "opacity": self.opacity,
+            "decor": self.decor,
+            "cover": self.cover,
+            "particles": self.particles,
+            "atmos": self.atmos,
+            "event": self.event,
         }
 
 
 @dataclass
-class FxRotate:
-    enabled: bool
-    target_z: int
-    speed_dps: int
+class LayerSpec:
+    layer_id: str
+    asset: str
+    fx: List[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        self.layer_id = normalize_asset_key(self.layer_id)
+        self.asset = normalize_asset_key(self.asset)
+        if not _LAYER_ID_RE.match(self.layer_id):
+            raise ValueError(f"invalid layer id: {self.layer_id!r}")
 
     def to_dict(self) -> dict:
         return {
-            "enabled": self.enabled,
-            "target_z": self.target_z,
-            "speed_dps": self.speed_dps,
+            "id": self.layer_id,
+            "asset": self.asset,
+            "fx": list(self.fx),
         }
 
 
 @dataclass
-class FxFall:
-    enabled: bool
-    target_z: int
-    speed_pps: int
+class Metadata:
+    version: int = SPEC_VERSION
+    created_by: str | None = None
+    confidence: float | None = None
 
     def to_dict(self) -> dict:
-        return {
-            "enabled": self.enabled,
-            "target_z": self.target_z,
-            "speed_pps": self.speed_pps,
-        }
-
-
-@dataclass
-class FxFlowX:
-    enabled: bool
-    target_z: int
-    speed_pps: int
-    range_px: int
-
-    def to_dict(self) -> dict:
-        return {
-            "enabled": self.enabled,
-            "target_z": self.target_z,
-            "speed_pps": self.speed_pps,
-            "range_px": self.range_px,
-        }
-
-
-@dataclass
-class FxJitter:
-    enabled: bool
-    target_z: int
-    amp_px: int
-
-    def to_dict(self) -> dict:
-        return {
-            "enabled": self.enabled,
-            "target_z": self.target_z,
-            "amp_px": self.amp_px,
-        }
-
-
-@dataclass
-class FxDrift:
-    enabled: bool
-    target_z: int
-    amp_px: int
-    speed_pps: int
-
-    def to_dict(self) -> dict:
-        return {
-            "enabled": self.enabled,
-            "target_z": self.target_z,
-            "amp_px": self.amp_px,
-            "speed_pps": self.speed_pps,
-        }
-
-
-@dataclass
-class FxTwinkle:
-    enabled: bool
-    target_z: int
-    period_ms: int
-
-    def to_dict(self) -> dict:
-        return {
-            "enabled": self.enabled,
-            "target_z": self.target_z,
-            "period_ms": self.period_ms,
-        }
-
-
-@dataclass
-class FxFlash:
-    enabled: bool
-    target_z: int
-    period_ms: int
-
-    def to_dict(self) -> dict:
-        return {
-            "enabled": self.enabled,
-            "target_z": self.target_z,
-            "period_ms": self.period_ms,
-        }
-
-
-@dataclass
-class FxCrossfade:
-    enabled: bool
-    target_z: int
-    period_ms: int
-
-    def to_dict(self) -> dict:
-        return {
-            "enabled": self.enabled,
-            "target_z": self.target_z,
-            "period_ms": self.period_ms,
-        }
-
-
-@dataclass
-class FxNeedle:
-    enabled: bool
-    target_z: int
-    min_deg: int
-    max_deg: int
-
-    def to_dict(self) -> dict:
-        return {
-            "enabled": self.enabled,
-            "target_z": self.target_z,
-            "min_deg": self.min_deg,
-            "max_deg": self.max_deg,
-        }
-
-
-def default_fx() -> Dict[str, object]:
-    return {
-        "ROTATE": FxRotate(False, 0, 0),
-        "FALL": FxFall(False, 0, 0),
-        "FLOW_X": FxFlowX(False, 0, 0, 0),
-        "JITTER": FxJitter(False, 0, 0),
-        "DRIFT": FxDrift(False, 0, 0, 0),
-        "TWINKLE": FxTwinkle(False, 0, 0),
-        "FLASH": FxFlash(False, 0, 0),
-        "CROSSFADE": FxCrossfade(False, 0, 0),
-        "NEEDLE": FxNeedle(False, 0, 0, 0),
-    }
+        data = {"version": self.version}
+        if self.created_by is not None:
+            data["created_by"] = self.created_by
+        if self.confidence is not None:
+            data["confidence"] = self.confidence
+        return data
 
 
 def _fx_to_dict(fx_value: object) -> dict:
@@ -240,29 +132,35 @@ def _fx_to_dict(fx_value: object) -> dict:
 
 @dataclass
 class Spec:
-    id: str
-    size_px: int
+    spec_id: Optional[int]
+    name: str
+    components: Components
     assets: List[Asset] = field(default_factory=list)
-    layers: List[Layer] = field(default_factory=list)
-    fx: Dict[str, object] = field(default_factory=default_fx)
-    version: str = SPEC_VERSION
+    layers: List[LayerSpec] = field(default_factory=list)
+    fx: Dict[str, object] = field(default_factory=dict)
+    metadata: Metadata = field(default_factory=Metadata)
+
+    def __post_init__(self) -> None:
+        self.name = normalize_asset_key(self.name)
+        expected_id = spec_id_for_name(self.name)
+        if self.spec_id is None:
+            self.spec_id = expected_id
+        if not (0 <= int(self.spec_id) <= 0xFFFFFFFF):
+            raise ValueError("spec_id out of range")
+        if int(self.spec_id) != expected_id:
+            raise ValueError("spec_id does not match name")
 
     def to_dict(self) -> dict:
-        if self.version != SPEC_VERSION:
-            raise ValueError("invalid spec version")
-
-        fx_keys = set(self.fx.keys())
-        missing = [key for key in FX_KEYS if key not in fx_keys]
-        if missing:
-            raise ValueError(f"missing fx keys: {missing}")
+        if self.metadata.version != SPEC_VERSION:
+            raise ValueError("invalid spec metadata version")
 
         return {
-            "version": self.version,
-            "id": self.id,
-            "size_px": self.size_px,
-            "assets": [asset.to_dict() for asset in self.assets],
+            "spec_id": int(self.spec_id),
+            "name": self.name,
+            "components": self.components.to_dict(),
             "layers": [layer.to_dict() for layer in self.layers],
-            "fx": {key: _fx_to_dict(self.fx[key]) for key in FX_KEYS},
+            "fx": {key: _fx_to_dict(self.fx[key]) for key in self.fx},
+            "metadata": self.metadata.to_dict(),
         }
 
 

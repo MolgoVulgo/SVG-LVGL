@@ -1,296 +1,296 @@
-## Statut du document
-
-Ce document est un **catalogue logique et documentaire**.
-
-* Il décrit les **familles de presets**, leurs intentions visuelles et leurs compositions.
-* Il **ne définit pas** de code runtime.
-* Il **ne constitue pas** une API C.
-
-Les presets **runtime effectifs** sont matérialisés par des **specs JSON `wx.spec v1`**, produites offline et embarquées dans les packs `WXPK`.
-
-Aucun preset n’est codé en dur côté C.
-
----
-
-## Mise à jour normative — JSON runtime `wx.spec` v1
-
-### Statut
-
-* La sortie JSON décrite dans ce document est désormais la **vérité runtime**.
-* Le runtime ESP/LVGL consomme ce JSON (directement ou via pack WXPK), sans aucune interprétation SVG.
-* La spécification formelle (schéma + signatures FX + pack) est définie dans **`wx-pack-spec.md`**.
-
-### Règles obligatoires
-
-* `asset_key` **normalisé** : minuscules uniquement, regex `[a-z0-9_]+` (UTF-8). Toute violation = erreur.
-* `asset_hash = FNV1a32(asset_key)`.
-* Les calques (`layers`) sont identifiés par `z` (ID **stable runtime**), unique par spec.
-* Tous les FX ciblent via `target_z` uniquement.
-* Le champ `fx` contient **toutes** les clés FX attendues (tableaux vides si non utilisées).
-
-### Dépréciation
-
-* Tous les exemples JSON antérieurs non conformes à `wx.spec v1` sont **obsolètes** et ne doivent plus être utilisés.
-* Se référer à **`wx-pack-spec.md`** pour l’exemple normatif et le schéma figé.
-
----
-
-# add-fonct — Format de sortie BIN (WXPK v1)
+# wx-pack-spec.md — Spécification binaire WXPK v1
 
 ## 0) Portée
 
-Ce document définit **le format de sortie BIN officiel** du projet.
-Il remplace toute spécification antérieure.
+Ce document définit **la spécification binaire normative et unique** du format de pack **WXPK v1**.
 
-Le format adopté est **WXPK v1**, tel que défini dans `wx-pack-spec.md`.
+Il fait autorité pour :
 
----
+* la génération offline (Python)
+* le chargement et l’interprétation runtime (ESP / LVGL)
 
-## 1) Décision structurante
-
-* **BIN est le format de production**.
-* Le **JSON runtime (wx.spec v1)** est **embarqué dans le pack**.
-* Le runtime ESP/LVGL **ne consomme que le pack** (pas de fichiers externes).
-
-Mode recommandé : **specs JSON splittées** (une entrée par icône).
+Tout pack déclaré **WXPK v1** doit respecter strictement ce document. Toute autre description antérieure est obsolète.
 
 ---
 
-## 2) Format WXPK v1 (normatif)
+## 1) Principes généraux
 
-### 2.1 Header
-
-Le header est strictement conforme à la structure suivante :
-
-* Type : `wxpk_header_t`
-* Taille : **32 bytes** (fixe)
-
-Voir définition exacte dans `wx-pack-spec.md`.
+* Endianness : **little‑endian uniquement**
+* Alignement : **4 bytes** pour toutes les sections
+* Accès runtime : lecture directe mémoire (flash / mmap / buffer)
+* Lookup logique unique : **TOC + clé `(key_hash, type, size_px)`**
+* Format de production : **BIN uniquement**
+* Vérité runtime : **JSON `wx.spec v1` embarqué**
 
 ---
 
-### 2.2 Table des matières (TOC)
+## 2) Layout binaire global
 
-Chaque entrée TOC est strictement conforme à :
+```
++------------------------+
+| wxpk_header_t (32B)    |
++------------------------+
+| padding (0–3B)         |
++------------------------+
+| TOC entries            |
+| wxpk_toc_entry_t[n]    |
++------------------------+
+| padding (0–3B)         |
++------------------------+
+| blobs (images / json)  |
++------------------------+
+```
 
-* Type : `wxpk_toc_entry_t`
-* Taille : **28 bytes** (fixe)
-
-Clé de lookup logique : `(key_hash, type, size_px)`.
+* Tous les offsets sont **absolus depuis le début du fichier**.
+* L’ordre des blobs est libre.
 
 ---
 
-## 3) Convention des clés (key_hash)
+## 3) Header binaire
 
-### 3.1 Images (WXPK_T_IMG)
+### 3.1 Structure `wxpk_header_t`
 
-* `key_hash = FNV1a32(asset_key)`
-* `asset_key` **doit être normalisé** avant hash :
+```c
+#pragma pack(push,1)
+typedef struct {
+  uint32_t magic;        // 'W''X''P''K' = 0x4B505857
+  uint16_t version;      // = 1 pour WXPK v1
+  uint8_t  endian;       // 0 = little-endian
+  uint8_t  header_size;  // sizeof(wxpk_header_t) = 32
+
+  uint32_t flags;        // réservé (0 pour v1)
+
+  uint32_t toc_offset;   // offset absolu vers la TOC
+  uint32_t toc_count;    // nombre d’entrées TOC
+
+  uint32_t blobs_offset; // offset absolu du premier blob
+
+  uint32_t file_crc32;   // optionnel, 0 si non utilisé
+} wxpk_header_t;
+#pragma pack(pop)
+```
+
+### 3.2 Contraintes
+
+* `magic` **doit** être `0x4B505857`
+* `version` **doit** être `1`
+* `header_size` **doit** être `32`
+* `toc_offset >= header_size`
+* `blobs_offset >= toc_offset + toc_count * sizeof(wxpk_toc_entry_t)`
+
+---
+
+## 4) Table des matières (TOC)
+
+### 4.1 Structure `wxpk_toc_entry_t`
+
+```c
+#pragma pack(push,1)
+typedef struct {
+  uint32_t key_hash;   // asset_hash (image) ou spec_id (JSON spec)
+  uint8_t  type;       // wxpk_entry_type_t
+  uint8_t  codec;      // wxpk_codec_t
+  uint16_t size_px;    // 64/96/128, 0 pour JSON
+
+  uint32_t offset;     // offset absolu du blob
+  uint32_t length;     // taille du blob en bytes
+  uint32_t crc32;      // CRC32 du blob
+
+  uint32_t meta;       // réservé (0 pour v1)
+} wxpk_toc_entry_t;
+#pragma pack(pop)
+```
+
+* Taille fixe : **28 bytes**
+* Clé de lookup runtime : `(key_hash, type, size_px)`
+
+---
+
+### 4.2 Types d’entrées (`type`)
+
+```c
+typedef enum {
+  WXPK_T_IMG        = 1,  // image
+  WXPK_T_JSON_INDEX = 2,  // index JSON global (optionnel)
+  WXPK_T_JSON_SPEC  = 3,  // spec wx.spec v1 (1 par preset)
+  WXPK_T_JSON_ALL   = 4   // JSON global monolithique (optionnel)
+} wxpk_entry_type_t;
+```
+
+---
+
+### 4.3 Codecs image (`codec`)
+
+```c
+typedef enum {
+  WXPK_C_NONE          = 0,
+  WXPK_C_LVGL_BIN      = 1, // recommandé production
+  WXPK_C_PNG           = 2, // nécessite décodeur LVGL
+  WXPK_C_RAW_RGBA8888  = 3
+} wxpk_codec_t;
+```
+
+---
+
+## 5) Convention des clés et hashing
+
+### 5.1 Asset key
+
+* Identifiant **canonique** d’un asset
+* Contraintes obligatoires :
 
   * minuscules uniquement
+  * UTF‑8
   * regex autorisée : `[a-z0-9_]+`
-  * UTF-8
 
-Toute violation est une **erreur bloquante CI**.
-
----
-
-### 3.2 Specs JSON (WXPK_T_JSON_SPEC)
-
-* `key_hash = spec_id` (u32 direct, **pas de hash**)
-* Lookup direct, sans collision.
-
-Ce choix est **figé**.
+Toute violation est une **erreur bloquante** (outil offline / CI).
 
 ---
 
-## 4) JSON runtime embarqué
+### 5.2 Asset hash
 
-### 4.1 Nature du JSON
-
-* Format : **wx.spec v1**
-* Vérité runtime
-* Produit exclusivement par l’outil offline Python
-
-### 4.2 Organisation recommandée
-
-* Une entrée TOC par spec (`WXPK_T_JSON_SPEC`)
-* Optionnel : un index JSON global (`WXPK_T_JSON_INDEX`)
-
-Avantages :
-
-* chargement partiel
-* faible empreinte mémoire
-
----
-
-## 5) Règles de compatibilité
-
-* `wxpk_header.version` doit correspondre à la version supportée par le runtime.
-* Toute modification breaking implique :
-
-  * bump de version WXPK
-  * régénération complète des packs
-
----
-
-## 6) Résumé exécutable
-
-* **WXPK v1** est la seule norme valide
-* Header = 32 bytes (`wxpk_header_t`)
-* TOC entry = 28 bytes (`wxpk_toc_entry_t`)
-* Images : lookup par `FNV1a32(asset_key)`
-* Specs : lookup par `spec_id`
-* JSON runtime embarqué (specs splittées recommandées)
-* `asset_key` normalisé `[a-z0-9_]+`
-
----
-
-## Décisions figées (rappel runtime)
-
-Les points suivants sont considérés **définitifs** :
-
-* **JSON runtime `wx.spec v1` est la vérité d’exécution**.
-
-  * Toute logique d’icône, de calques et de FX est décrite dans le JSON.
-  * Le runtime ESP/LVGL ne contient aucune heuristique métier.
-
-* **BIN `WXPK v1` est le format de production**.
-
-  * Les assets image et les specs JSON sont embarqués dans le pack.
-  * Le runtime charge exclusivement depuis le pack.
-
-* **Lookup des assets par `asset_hash + TOC`**.
-
-  * `asset_hash = FNV1a32(asset_key normalisé)`.
-  * La table des matières (TOC) est l’unique mécanisme de résolution en production.
-
-* **Enums `WX_ASSET_*` réservés au canon**.
-
-  * Utilisés uniquement comme optimisation ou raccourci.
-  * Le runtime ne doit jamais dépendre fonctionnellement d’un enum.
-
-* **Codec image de production recommandé : `LVGL_BIN`**.
-
-  * PNG autorisé uniquement si un décodeur LVGL est présent.
-
-* **Rôle du core ESP strictement interprétatif**.
-
-  * Le core ESP/LVGL interprète : JSON `wx.spec v1` + pack `WXPK v1`.
-  * Il n’analyse jamais de SVG.
-  * Toute analyse, découpe ou décision sémantique est **exclusivement offline (Python)**.
-
-Toute modification de ces points implique une révision explicite de l’architecture et un bump de version.
-
----
-
-## Asset keys & hashing
-
-### Asset key (identifiant canonique)
-
-* `asset_key` est l’identifiant **canonique** d’un asset.
-* Il est utilisé pour le packaging, le hashing et le lookup runtime.
-
-Contraintes **obligatoires** :
-
-* minuscules uniquement
-* UTF-8
-* regex autorisée : `[a-z0-9_]+`
-
-Toute violation est une **erreur bloquante** (CI / outil offline).
-
----
-
-### Asset hash
-
-* `asset_hash = FNV1a32(asset_key)`
-* L’algorithme de hash est **figé** (voir `wx-pack-spec.md`).
+* `asset_hash = FNV1a32(asset_key normalisé)`
+* Algorithme **figé**
 
 Conséquences :
 
-* `asset_hash` est la **clé primaire runtime** pour la résolution d’images.
-* Le runtime ne dépend jamais du nom texte.
+* `asset_hash` est la **clé primaire runtime**
+* le runtime ne dépend jamais du nom texte
 
 ---
 
-### Stabilité et versioning
+### 5.3 Images
 
-* Tout **renommage** d’un `asset_key` existant est **interdit** sans :
-
-  * bump de version du pack (WXPK)
-  * régénération complète des assets
-
-Un renommage sans bump est considéré comme une **rupture ABI**.
+* `type = WXPK_T_IMG`
+* `key_hash = asset_hash`
+* `size_px` **obligatoire** (64 / 96 / 128)
 
 ---
 
-### Résolution runtime
+### 5.4 Specs JSON
 
-Le resolver runtime repose exclusivement sur :
+* `type = WXPK_T_JSON_SPEC`
+* `key_hash = spec_id` (u32 direct, **pas de hash**)
+* `size_px = 0`
 
-* `asset_hash`
-* `size_px`
-* `type` (image / spec)
-
-Aucun autre mécanisme implicite n’est autorisé en production.
+Ce choix est **définitif**.
 
 ---
 
-## Mise à jour normative — Règles d’exécution du projet
+## 6) Blobs
 
-### Vérité runtime
+* Les blobs sont stockés **bruts**, sans compression additionnelle
+* Chaque blob commence à l’offset indiqué dans la TOC
 
-* La **seule vérité runtime** est le JSON **`wx.spec v1`**.
-* Toute logique d’icône (layers, FX, paramètres) doit être exprimée dans ce JSON.
-* Le format de production est **`WXPK v1`** (pack BIN).
+### 6.1 Images
 
-### Rôle strict de l’IA (Codex)
+* Un blob = une image pour une taille donnée
+* Codec recommandé : `WXPK_C_LVGL_BIN`
+* PNG autorisé uniquement si un décodeur est présent
 
-L’IA agit comme **agent d’ingénierie déterministe** :
+### 6.2 JSON
 
-* elle **ne code pas de presets en dur côté C**
-* elle **ne déduit jamais** de logique runtime à partir du SVG côté ESP
-* elle applique les contrats existants sans extrapolation
+* Encodage UTF‑8
+* Format : **`wx.spec v1` uniquement**
+* Vérité runtime absolue
 
-### Séparation des responsabilités
+Organisation recommandée :
 
-* **Offline (Python)** :
+* une entrée TOC par spec (`WXPK_T_JSON_SPEC`)
+* optionnel : un index JSON global (`WXPK_T_JSON_INDEX`)
 
-  * analyse SVG
-  * découpe en calques
-  * génération des assets image
-  * génération des specs JSON `wx.spec v1`
-  * génération du pack `WXPK v1`
+---
 
-* **Runtime (ESP / LVGL)** :
+## 7) CRC et validation
 
-  * chargement du pack
-  * résolution des assets par `(asset_hash, size_px, type)`
-  * interprétation stricte des specs JSON
-  * affichage LVGL + FX
+* `crc32` calculé sur le blob uniquement
+* Le runtime **doit refuser** :
 
-Aucune logique SVG, sémantique ou heuristique n’est autorisée côté runtime.
+  * CRC invalide
+  * offsets hors fichier
+  * types inconnus
 
-### Règles contractuelles à respecter
+---
 
-* `asset_key` doit être normalisé `[a-z0-9_]+`
+## 8) Algorithme de lookup runtime
+
+```
+find(type, key_hash, size_px):
+  for entry in TOC:
+    if entry.type == type
+       and entry.key_hash == key_hash
+       and entry.size_px == size_px:
+         return entry
+  return NULL
+```
+
+* TOC triée + dichotomie autorisée
+* Aucun autre mécanisme implicite n’est autorisé
+
+---
+
+## 9) Vérité runtime et séparation des responsabilités
+
+### 9.1 Vérité runtime
+
+* La **seule vérité runtime** est le JSON `wx.spec v1`
+* Toute logique d’icône (layers, FX, paramètres) est décrite dans ce JSON
+* Le runtime ESP/LVGL ne contient **aucune heuristique métier**
+
+---
+
+### 9.2 Séparation stricte
+
+**Offline (Python)** :
+
+* analyse SVG
+* découpe en calques
+* génération des assets image
+* génération des specs JSON `wx.spec v1`
+* génération du pack `WXPK v1`
+
+**Runtime (ESP / LVGL)** :
+
+* chargement du pack
+* résolution via TOC `(asset_hash, size_px, type)`
+* interprétation stricte du JSON
+* affichage LVGL + FX
+
+Aucune analyse SVG n’est autorisée côté runtime.
+
+---
+
+## 10) Règles contractuelles JSON `wx.spec v1`
+
+* `asset_key` normalisé `[a-z0-9_]+`
 * `asset_hash = FNV1a32(asset_key)`
-* les FX ciblent **exclusivement** via `target_z`
-* toutes les clés FX sont présentes dans le JSON (tableaux vides si inutilisées)
+* calques identifiés par `z` (ID stable, unique)
+* tous les FX ciblent **exclusivement** via `target_z`
+* le champ `fx` contient **toutes** les clés attendues (tableaux vides si inutilisées)
 
-### Posture de réponse attendue
+---
 
-* toutes les réponses sont en **français**
-* ton **technique, direct, non pédagogique**
-* aucune suggestion hors périmètre
-* aucune réécriture implicite des contrats
+## 11) Versioning et compatibilité
 
-### Gestion des évolutions
+* Toute rupture de compatibilité implique :
 
-* toute modification breaking implique :
-
-  * bump de version (`wx.spec` ou `WXPK`)
+  * bump de version (`WXPK` ou `wx.spec`)
   * mise à jour documentaire
   * régénération complète des packs
 
-L’IA doit signaler explicitement toute demande incompatible avec ces règles.
+* Tout renommage d’`asset_key` sans bump est une **rupture ABI**.
+
+---
+
+## 12) Décisions figées
+
+Les points suivants sont **définitifs** :
+
+* `WXPK v1` est la seule norme binaire valide
+* `wx.spec v1` est la vérité runtime
+* lookup exclusif par TOC
+* enums `WX_ASSET_*` non contractuels
+* codec image de production recommandé : `LVGL_BIN`
+* core ESP strictement interprétatif
+
+Toute évolution incompatible impose une révision explicite et un bump de version.

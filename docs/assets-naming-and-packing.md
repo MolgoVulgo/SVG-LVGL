@@ -1,74 +1,58 @@
-# Assets naming & packing (LVGL weather icons)
+# assets-naming-and-packing.md — Convention canonique assets, nommage et packing
 
-## 0) Objectif
+## 0) Portée
 
-Définir une convention **unique** et **mécanique** pour :
+Ce document définit la **convention normative unique** pour :
 
-* nommer les PNG sources et les assets LVGL générés (`*.c/*.h`)
-* organiser les packs par taille / thème
-* garantir : alignement, pivots, rendu pixel-perfect, zéro resize runtime
+* le **nommage des assets** (PNG, sorties LVGL, symboles)
+* l’**organisation des packs** par thème et par taille
+* la **définition et l’usage des pivots**
+* les **règles de packing** garantissant un rendu pixel‑perfect
 
-Ce document est la vérité pour le `wx_asset_resolver_t`.
+Il constitue la **vérité contractuelle** pour l’outillage offline (Python), le packaging WXPK et le runtime ESP/LVGL.
+
+Toute autre convention est obsolète.
 
 ---
 
 ## 1) Principes non négociables
 
-1. **Plein cadre** : chaque PNG fait exactement `SIZE×SIZE` et inclut l’offset (marges) si nécessaire.
-
-   * Conséquence : la composition LVGL se fait à `(0,0)` dans un conteneur `SIZE×SIZE`.
-2. **Fond transparent** obligatoire (alpha).
-3. **Aucune mise à l’échelle runtime** (ni zoom LVGL, ni resize obj) : on choisit le pack de taille.
-4. **Un asset = une intention** (core vs fx vs cover vs particule). Pas de mélange.
-5. **Les pivots sont définis dans le repère image** (pixels du PNG) et sont identiques pour toutes les tailles via scaling linéaire.
+1. **PNG plein cadre** : chaque image fait exactement `SIZE × SIZE` pixels et intègre ses marges.
+2. **Fond transparent obligatoire** (alpha).
+3. **Aucune mise à l’échelle runtime** (ni zoom LVGL, ni resize objet).
+4. **Un asset = une intention visuelle unique** (core, FX, particule, UI, etc.).
+5. **Pivots définis dans le repère image**, identiques conceptuellement pour toutes les tailles via scaling linéaire.
+6. **Aucune déduction implicite runtime** (noms, tailles, pivots, fallback).
 
 ---
 
 ## 2) Arborescence de référence
 
-### 2.1 Structure recommandée
+### 2.1 Structure standard
 
 ```
 /assets
   /src_svg
-    clear-day.svg
-    ...
   /raster
-    /base
-      /64
-      /96
-      /128
-    /dark
+    /<theme>
       /64
       /96
       /128
   /lvgl
-    /base
-      /64
-      /96
-      /128
-    /dark
+    /<theme>
       /64
       /96
       /128
 ```
 
-* `src_svg/` : sources originales (jamais modifiées à la main sauf versionnement clair)
-* `raster/<theme>/<size>/` : PNG exportés (alpha)
-* `lvgl/<theme>/<size>/` : sorties `lv_img_conv` (`*.c/*.h`)
+* `src_svg/` : sources maîtres (versionnées uniquement)
+* `raster/` : PNG exportés plein cadre + alpha
+* `lvgl/` : sorties `lv_img_conv` (`*.c/*.h`)
 
-### 2.2 Option (monorepo firmware)
-
-Si tu veux tout embarquer dans le firmware :
+### 2.2 Intégration firmware (option)
 
 ```
-/firmware
-  /components
-    /wx_icons
-      /assets
-        /base/64/*.c
-        /base/96/*.c
-        /base/128/*.c
+/firmware/components/wx_icons/assets/<theme>/<size>/*.c
 ```
 
 ---
@@ -77,15 +61,15 @@ Si tu veux tout embarquer dans le firmware :
 
 ### 3.1 Tokens
 
-* `theme` : `base` | `dark` | `amoled` | etc.
-* `size` : `64` | `96` | `128` (px)
-* `asset` : identifiant fonctionnel (voir §4)
+* `theme` : `base`, `dark`, `amoled`, …
+* `size` : `64`, `96`, `128`
+* `asset` : identifiant canonique (§4)
 * `variant` : suffix optionnel (`alt`, `v2`, `a`, `b`)
-* `frame` : pour crossfade / animation frame-bakée (`f0`, `f1`, ...)
+* `frame` : frame animée bakée (`f0`, `f1`, …)
 
-### 3.2 PNG raster (source pour conversion)
+---
 
-Format :
+### 3.2 PNG raster
 
 ```
 <asset>[_<variant>][_fN]_<size>.png
@@ -94,195 +78,184 @@ Format :
 Exemples :
 
 * `sun_core_64.png`
-* `sun_rays_128.png`
-* `pressure_high_alt_64.png`
-* `raindrop_norm_f0_64.png` / `raindrop_norm_f1_64.png`
-* `haze_layer_a_96.png`
+* `pressure_high_alt_96.png`
+* `raindrop_norm_f0_64.png`
 
-### 3.3 LVGL outputs (lv_img_conv)
+---
 
-Format :
+### 3.3 Sorties LVGL (`lv_img_conv`)
 
 ```
 wx_<theme>_<asset>[_<variant>][_fN]_<size>.(c|h)
 ```
 
-Exemples :
+---
 
-* `wx_base_sun_core_64.c`
-* `wx_dark_cloud_96.c`
-* `wx_base_raindrop_norm_f0_64.c`
-
-### 3.4 Symbol LVGL (`lv_img_dsc_t`)
-
-Nom du symbole dans le `.c` :
+### 3.4 Symbole LVGL
 
 ```
 wx_<theme>_<asset>[_<variant>][_fN]_<size>
 ```
 
-Exemple :
-
-* `extern const lv_img_dsc_t wx_base_cloud_64;`
-
 ---
 
-## 4) Dictionnaire d’assets (canon)
+## 4) Dictionnaire d’assets canoniques
 
-Ce dictionnaire doit rester stable car il alimente `wx_asset_id_t`.
+Ce dictionnaire est **stable** et alimente l’identité runtime.
 
-### 4.1 Décor
+### Décor
 
 * `sun_core`
 * `sun_rays`
 * `moon`
-* `moon_phase_first_quarter` (si phases multiples)
+* `moon_phase_first_quarter`
 
-### 4.2 Couverture
+### Couverture
 
 * `cloud`
 
-### 4.3 Particules
+### Particules
 
-* `drop` (pluie)
-* `drizzle_drop` (optionnel si visuel différent)
+* `drop`
+* `drizzle_drop`
 * `snowflake`
 * `hail`
-* `sleet_drop` (optionnel, sinon mix drop+snowflake)
+* `sleet_drop`
 
-### 4.4 Atmos
+### Atmosphère
 
-* `haze_layer_a`, `haze_layer_b` (couches)
+* `haze_layer_a`, `haze_layer_b`
 * `smoke_layer_a`
 * `mist_layer_a`
 * `dust_streaks`
 * `dust_wind_group`
 
-### 4.5 Énergie / événements
+### Événements
 
 * `lightning`
 * `hurricane_spiral`
 
-### 4.6 Instruments
+### Instruments
 
-* `dial` (baromètre/compas – fond)
-* `needle` (baromètre/compas – aiguille)
-* `compass_dial` / `compass_needle` (si distinct)
+* `dial`
+* `needle`
+* `compass_dial`
+* `compass_needle`
 
-### 4.7 UI
+### UI
 
 * `ui_celsius`
 * `pressure_high`, `pressure_high_alt`
 * `pressure_low`, `pressure_low_alt`
-* `humidity_drop` (si icône séparée)
+* `humidity_drop`
 
 ---
 
-## 5) Variantes et frames (règles)
+## 5) Variantes et frames
 
-### 5.1 Variantes (`_alt`, `_v2`)
+### 5.1 Variantes
 
-* Une variante change l’asset visuel mais **pas l’intention**.
-* Exemple : `pressure_high_alt` = même meaning, autre look.
+* Modifient le rendu, **pas l’intention**.
+* Partagent les mêmes pivots et FX.
 
 ### 5.2 Frames (`_fN`)
 
-Utilisées uniquement quand LVGL ne peut pas reproduire un transform (ex: scale non-uniforme).
-
-* `*_f0` = état normal
-* `*_f1` = état compressé / alternatif
-* L’animation runtime se fait par **crossfade** (opacity) entre frames.
+* Utilisées uniquement quand un FX n’est pas reproductible dynamiquement.
+* Animation runtime par **crossfade** (opacity).
+* Les frames doivent exister en paires cohérentes (`f0`, `f1`, …).
 
 ---
 
-## 6) Pivots (contrat)
+## 6) Pivots — Contrat canonique
 
 ### 6.1 Définition
 
-Un pivot est défini **en pixels** dans le repère du PNG `SIZE×SIZE`.
+* Pivot exprimé en coordonnées **normalisées** `(x,y) ∈ [0..1]`.
+* Repère : image PNG plein cadre `SIZE × SIZE`.
+* Aucun pivot implicite.
 
-### 6.2 Stockage des pivots
+### 6.2 Conversion normalisée → pixels
 
-Les pivots ne doivent pas être “devinés” en runtime.
-Deux options :
+```
+pivot_px_x = round(pivot_norm_x * (size_px - 1))
+pivot_px_y = round(pivot_norm_y * (size_px - 1))
+```
 
-1. **Table statique** par asset et par taille
-2. **Table normalisée** (0..1) puis conversion en pixels
+---
 
-Recommandé : normalisé.
+### 6.3 Table canonique des pivots
 
-Exemple (normalisé) :
+Tous les assets définis ci‑dessous utilisent un pivot **centré** `(0.5, 0.5)` :
 
-* `sun_rays` pivot = `(0.5, 0.5)`
-* `needle` pivot = `(0.5, 0.5)`
+* décor : `sun_core`, `sun_rays`, `moon`, `moon_phase_first_quarter`
+* couverture : `cloud`
+* particules : `drop`, `drizzle_drop`, `snowflake`, `hail`, `sleet_drop`
+* atmos : `haze_layer_a`, `haze_layer_b`, `smoke_layer_a`, `mist_layer_a`, `dust_streaks`, `dust_wind_group`
+* événements : `lightning`, `hurricane_spiral`
+* instruments : `dial`, `needle`, `compass_dial`, `compass_needle`
+* UI : `ui_celsius`, `pressure_high`, `pressure_high_alt`, `pressure_low`, `pressure_low_alt`, `humidity_drop`
 
-### 6.3 Implication
-
-* Changer un export PNG qui décale le dessin = breaking change.
-* Toute modification doit conserver le plein cadre + pivot cohérent.
+Toute modification de pivot est un **breaking change visuel**.
 
 ---
 
 ## 7) Packs thème / taille
 
-### 7.1 Sélection du pack
-
-* UI choisit `size` en fonction du layout (pas de scaling).
-* `resolver(id,size)` renvoie l’asset exact.
-
-### 7.2 Thèmes
-
-* `theme=base` = couleurs standard
-* `theme=dark` = contrastes adaptés dark UI
-* Un thème est un **ensemble complet** d’assets (ou partiel, mais alors fallback explicite).
+* Sélection par `size` (pas de scaling).
+* Sélection par `theme`.
+* Un thème est un **ensemble cohérent** d’assets.
 
 ---
 
-## 8) Fallbacks (obligatoires)
+## 8) Fallbacks
 
-### 8.1 Fallback de taille
+### Taille
 
-Interdit par défaut.
+* **Interdit par défaut**.
+* Autorisé uniquement si explicitement contracté.
 
-* Si une taille manque, on **échoue** (assert/log) ou on choisit la plus proche **uniquement si explicitement autorisé**.
+### Thème
 
-### 8.2 Fallback de thème
-
-Autorisé si défini :
-
-* si `dark` manque → fallback `base`.
+* Autorisé si défini (`dark → base`).
 
 ---
 
-## 9) Exemple de resolver (contrat attendu)
+## 9) Resolver — Contrat attendu
 
-Le resolver doit :
+* Résolution O(1)
+* Aucun `malloc`
+* Retour `NULL` si asset absent
 
-* être O(1)
-* ne faire aucun malloc
-* renvoyer `NULL` si asset absent
-
-Pseudo-table (à générer) :
-
-* clé = `(theme,size,asset_id)`
-* valeur = `&wx_<theme>_<asset>_<size>`
+Clé logique : `(theme, size, asset_id)`.
 
 ---
 
-## 10) Check de conformité (CI)
+## 10) Conformité automatique (CI)
 
-Règles vérifiables automatiquement :
+Vérifications obligatoires :
 
-* Tous les PNG font exactement `SIZE×SIZE`
+* PNG exactement `SIZE × SIZE`
 * Alpha présent
-* Nommage conforme regex
-* Tous les `wx_asset_id_t` ont une entrée pour chaque pack requis
-* Toutes les frames `_fN` existent en paire (f0+f1)
+* Nommage conforme
+* Présence de tous les assets requis par pack
+* Cohérence des frames
 
 Regex PNG :
 
-* `^[a-z0-9]+(?:_[a-z0-9]+)*(?:_f[0-9]+)?_(64|96|128)\.png$`
+```
+^[a-z0-9]+(?:_[a-z0-9]+)*(?:_f[0-9]+)?_(64|96|128)\.png$
+```
 
-Regex LVGL symbol :
+Regex symbole LVGL :
 
-* `^wx_(base|dark)_[a-z0-9]+(?:_[a-z0-9]+)*(?:_f[0-9]+)?_(64|96|128)$`
+```
+^wx_(base|dark)_[a-z0-9]+(?:_[a-z0-9]+)*(?:_f[0-9]+)?_(64|96|128)$
+```
+
+---
+
+## 11) Cohérence et invariants
+
+* Convention compatible avec WXPK v1 et `wx.spec v1`.
+* Aucun conflit entre nommage, pivots et packing.
+* Toute déviation implique mise à jour documentaire + régénération des assets.

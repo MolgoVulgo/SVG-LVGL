@@ -5,81 +5,52 @@ from __future__ import annotations
 from pathlib import Path
 
 from pipeline.assets.naming import normalize_asset_key
-from pipeline.spec.model import Asset, Layer, Spec
+from pipeline.hash import fnv1a32
+from pipeline.spec.model import Components, LayerSpec, Spec
 from pipeline.svg.parse import SvgDocument, parse_svg
-from pipeline.wxspec import ensure_fx_complete, validate_spec
+from pipeline.wxspec import validate_spec
 
 
-def _default_layer_w(size_px: int) -> int:
-    return size_px
+def _derive_spec_name(svg: SvgDocument, svg_path: Path, explicit: str | None) -> str:
+    raw = explicit or svg.spec_id or svg_path.stem
+    return normalize_asset_key(raw)
 
 
-def _default_layer_h(size_px: int) -> int:
-    return size_px
+def _unique_layer_id(base: str, used: set[str]) -> str:
+    if base not in used:
+        used.add(base)
+        return base
+    index = 1
+    while True:
+        candidate = f"{base}_{index}"
+        if candidate not in used:
+            used.add(candidate)
+            return candidate
+        index += 1
 
 
-def _default_pivot(value: int) -> int:
-    return value // 2
-
-
-def _asset_path(asset_key: str, size_px: int) -> str:
-    return f"{asset_key}_{size_px}.bin"
-
-
-def _layers_from_svg(svg: SvgDocument, size_px: int) -> list[Layer]:
-    layers: list[Layer] = []
-    for raw in svg.layers:
-        w = raw.w if raw.w is not None else _default_layer_w(size_px)
-        h = raw.h if raw.h is not None else _default_layer_h(size_px)
-        pivot_x = raw.pivot_x if raw.pivot_x is not None else _default_pivot(w)
-        pivot_y = raw.pivot_y if raw.pivot_y is not None else _default_pivot(h)
+def _layers_from_svg(svg: SvgDocument) -> list[LayerSpec]:
+    layers: list[LayerSpec] = []
+    used_ids: set[str] = set()
+    for raw in sorted(svg.layers, key=lambda layer: layer.z):
+        base_id = normalize_asset_key(raw.asset_key)
+        layer_id = _unique_layer_id(base_id, used_ids)
         layers.append(
-            Layer(
-                z=raw.z,
-                asset_key=raw.asset_key,
-                x=raw.x,
-                y=raw.y,
-                w=w,
-                h=h,
-                pivot_x=pivot_x,
-                pivot_y=pivot_y,
-                opacity=raw.opacity,
+            LayerSpec(
+                layer_id=layer_id,
+                asset=base_id,
+                fx=[],
             )
         )
     return layers
 
 
-def _assets_from_layers(layers: list[Layer], size_px: int) -> list[Asset]:
-    assets: dict[str, Asset] = {}
-    for layer in layers:
-        if layer.asset_key in assets:
-            continue
-        assets[layer.asset_key] = Asset(
-            asset_key=layer.asset_key,
-            size_px=size_px,
-            type="image",
-            path=_asset_path(layer.asset_key, size_px),
-        )
-    return list(assets.values())
-
-
-def _derive_spec_id(svg: SvgDocument, svg_path: Path, explicit: str | None) -> str:
-    raw = explicit or svg.spec_id or svg_path.stem
-    return normalize_asset_key(raw)
-
-
-def _default_layer_for_svg(spec_id: str, size_px: int) -> list[Layer]:
+def _default_layer_for_svg(spec_name: str) -> list[LayerSpec]:
     return [
-        Layer(
-            z=0,
-            asset_key=spec_id,
-            x=0,
-            y=0,
-            w=size_px,
-            h=size_px,
-            pivot_x=size_px // 2,
-            pivot_y=size_px // 2,
-            opacity=255,
+        LayerSpec(
+            layer_id=spec_name,
+            asset=spec_name,
+            fx=[],
         )
     ]
 
@@ -91,20 +62,53 @@ def map_svg_to_spec(
     size_px: int | None = None,
 ) -> Spec:
     svg = parse_svg(svg_path)
-    resolved_id = _derive_spec_id(svg, svg_path, spec_id)
+    resolved_name = _derive_spec_name(svg, svg_path, spec_id)
     resolved_size = size_px or svg.width or svg.height
     if resolved_size is None:
         raise ValueError("size_px not provided and SVG size not found")
 
-    layers = _layers_from_svg(svg, resolved_size)
+    layers = _layers_from_svg(svg)
     if not layers:
-        layers = _default_layer_for_svg(resolved_id, resolved_size)
+        layers = _default_layer_for_svg(resolved_name)
     if not layers:
         raise ValueError("no layers found in SVG")
 
-    assets = _assets_from_layers(layers, resolved_size)
-    fx = ensure_fx_complete(svg.fx)
+    fx = {}
+    fx_targets = {}
+    for key, raw in svg.fx.items():
+        if not isinstance(raw, dict):
+            continue
+        target_z = raw.get("target_z")
+        fx_targets[key] = target_z
+        cleaned = {k: v for k, v in raw.items() if k not in {"enabled", "target_z"}}
+        fx[key] = cleaned
 
-    spec = Spec(id=resolved_id, size_px=resolved_size, assets=assets, layers=layers, fx=fx)
+    if fx_targets:
+        for key, target_z in fx_targets.items():
+            if target_z is None and len(layers) == 1:
+                layers[0].fx.append(key)
+                continue
+            for raw_layer in svg.layers:
+                if raw_layer.z == target_z:
+                    index = sorted(svg.layers, key=lambda layer: layer.z).index(raw_layer)
+                    layers[index].fx.append(key)
+                    break
+
+    used_fx = {fx_key for layer in layers for fx_key in layer.fx}
+    fx = {key: fx.get(key, {}) for key in used_fx}
+
+    spec = Spec(
+        spec_id=fnv1a32(resolved_name),
+        name=resolved_name,
+        components=Components(
+            decor="NONE",
+            cover="NONE",
+            particles="NONE",
+            atmos="NONE",
+            event="NONE",
+        ),
+        layers=layers,
+        fx=fx,
+    )
     validate_spec(spec)
     return spec

@@ -91,7 +91,6 @@ Elle sert uniquement à :
 
 #### Alternatives écartées
 
-* Tkinter : trop limité pour preview graphique riche
 * Web (Electron/WebView) : inutilement lourd
 
 ---
@@ -166,7 +165,7 @@ Aucune étape implicite.
     mapper.py
     layers.py
     export.py
-    gui.py
+    gui_qt.py
 /docs
   agent.md
   wx-fx-contracts.md

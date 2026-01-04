@@ -10,6 +10,8 @@
 
 Contrainte : le mapping vise la **robustesse** (pas la perfection sémantique). Il doit couvrir 95% des icônes météo par heuristiques explicites.
 
+Note : le mapping auto peut produire une spec **non équivalente** à un preset officiel, même si les composants détectés semblent similaires.
+
 ---
 
 ## 1) Entrées / sorties

@@ -2,18 +2,20 @@
 
 #include <string.h>
 
-#define WXPK_MAGIC "WXPK"
+#define WXPK_MAGIC 0x4B505857u
 #define WXPK_HEADER_SIZE 32u
+#define WXPK_ENDIAN_LITTLE 0u
 
 typedef struct __attribute__((packed)) {
-    char magic[4];
-    uint16_t version_major;
-    uint16_t version_minor;
-    uint32_t toc_count;
+    uint32_t magic;
+    uint16_t version;
+    uint8_t endian;
+    uint8_t header_size;
+    uint32_t flags;
     uint32_t toc_offset;
-    uint32_t json_offset;
-    uint32_t json_size;
-    uint32_t pack_size;
+    uint32_t toc_count;
+    uint32_t blobs_offset;
+    uint32_t file_crc32;
     uint32_t reserved;
 } wxpk_header_t;
 
@@ -28,16 +30,25 @@ static int wxpk_read_header(const wx_pack_view_t* view, wxpk_header_t* out_heade
         return -1;
     }
     memcpy(out_header, view->base, sizeof(*out_header));
-    if (memcmp(out_header->magic, WXPK_MAGIC, 4) != 0) {
+    if (out_header->magic != WXPK_MAGIC) {
         return -1;
     }
-    if (out_header->version_major != 1) {
+    if (out_header->version != 1) {
         return -1;
     }
-    if (out_header->pack_size != view->size) {
+    if (out_header->endian != WXPK_ENDIAN_LITTLE) {
         return -1;
     }
-    if ((size_t)out_header->json_offset + out_header->json_size > view->size) {
+    if (out_header->header_size != WXPK_HEADER_SIZE) {
+        return -1;
+    }
+    if (out_header->toc_offset < WXPK_HEADER_SIZE) {
+        return -1;
+    }
+    if (out_header->toc_offset + out_header->toc_count * sizeof(wxpk_toc_entry_t) > view->size) {
+        return -1;
+    }
+    if (out_header->blobs_offset > view->size) {
         return -1;
     }
     return 0;
@@ -52,17 +63,42 @@ int wx_pack_open(wx_pack_view_t* view, const void* data, size_t size) {
     return 0;
 }
 
-const char* wx_pack_get_json(const wx_pack_view_t* view) {
+int wx_pack_find_entry(
+    const wx_pack_view_t* view,
+    uint32_t key_hash,
+    uint8_t type,
+    uint16_t size_px,
+    wxpk_toc_entry_t* out_entry
+) {
     wxpk_header_t header;
+    if (!out_entry) {
+        return -1;
+    }
     if (wxpk_read_header(view, &header) != 0) {
+        return -1;
+    }
+
+    for (uint32_t i = 0; i < header.toc_count; i++) {
+        size_t offset = header.toc_offset + i * sizeof(wxpk_toc_entry_t);
+        if (offset + sizeof(wxpk_toc_entry_t) > view->size) {
+            return -1;
+        }
+        wxpk_toc_entry_t entry;
+        memcpy(&entry, view->base + offset, sizeof(entry));
+        if (entry.key_hash == key_hash && entry.type == type && entry.size_px == size_px) {
+            *out_entry = entry;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+const void* wx_pack_get_blob(const wx_pack_view_t* view, const wxpk_toc_entry_t* entry) {
+    if (!view || !entry) {
         return NULL;
     }
-    if (header.json_size == 0) {
+    if (entry->offset + entry->length > view->size) {
         return NULL;
     }
-    const uint8_t* json = view->base + header.json_offset;
-    if (json[header.json_size - 1] != '\0') {
-        return NULL;
-    }
-    return (const char*)json;
+    return view->base + entry->offset;
 }

@@ -176,9 +176,11 @@ class WxSpecQtGui(QtWidgets.QMainWindow):
             return
 
         self._fx_list.clear()
-        for key, value in self._current_spec.get("fx", {}).items():
-            if isinstance(value, dict) and value.get("enabled"):
-                self._fx_list.addItem(f"{key} -> z={value.get('target_z')}")
+        fx = self._current_spec.get("fx", {})
+        for layer in self._spec_layers():
+            for key in layer.get("fx", []):
+                if key in fx:
+                    self._fx_list.addItem(f"{key} -> {layer['id']}")
 
         tab = self._tabs.tabText(self._tabs.currentIndex()).lower()
         if tab == "svg":
@@ -210,7 +212,7 @@ class WxSpecQtGui(QtWidgets.QMainWindow):
         row = 0
         col = 0
         layer_map = self._layer_index_map()
-        for asset in self._current_spec.get("assets", []):
+        for asset in self._spec_assets():
             asset_key = asset["asset_key"]
             pixmap = self._load_asset_pixmap(
                 assets_root, asset, layer_map.get(asset_key)
@@ -251,7 +253,7 @@ class WxSpecQtGui(QtWidgets.QMainWindow):
         if not self._current_spec:
             self._frame_timer.stop()
             return
-        size_px = int(self._current_spec.get("size_px", 64))
+        size_px = self._resolve_size_px()
         if size_px <= 0:
             return
         scale = 320 / size_px
@@ -263,17 +265,17 @@ class WxSpecQtGui(QtWidgets.QMainWindow):
         from PIL import Image
 
         canvas = Image.new("RGBA", (int(size_px), int(size_px)), (0, 0, 0, 0))
-        layers = sorted(self._current_spec.get("layers", []), key=lambda x: x["z"])
-        assets = {asset["asset_key"]: asset for asset in self._current_spec.get("assets", [])}
+        layers = self._spec_layers()
+        assets = {asset["asset_key"]: asset for asset in self._spec_assets()}
         layer_map = self._layer_index_map()
         fx = self._current_spec.get("fx", {})
 
         for layer in layers:
-            base = self._asset_bitmaps.get(layer["asset_key"])
+            base = self._asset_bitmaps.get(layer["asset"])
             if base is None:
-                idx = layer_map.get(layer["asset_key"])
+                idx = layer_map.get(layer["asset"])
                 if idx is not None:
-                    fallback = self._get_svg_raster(int(layer["w"]), idx)
+                    fallback = self._get_svg_raster(size_px, idx)
                     if fallback is not None:
                         base = _load_pil_image(fallback)
             if base is None:
@@ -284,64 +286,59 @@ class WxSpecQtGui(QtWidgets.QMainWindow):
             opacity = 1.0
             rotation = 0.0
 
-            for key, value in fx.items():
-                if not isinstance(value, dict) or not value.get("enabled"):
+            for key in layer.get("fx", []):
+                value = fx.get(key, {})
+                if not isinstance(value, dict):
                     continue
-                target_match = int(value.get("target_z", -1)) == int(layer["z"])
-                if not target_match:
-                    idx = layer_map.get(layer["asset_key"])
-                    anim_types = self._svg_anim_map.get(idx, set())
-                    if key == "ROTATE" and "rotate" not in anim_types:
-                        continue
-                    if key in {"FALL", "FLOW_X"} and "translate" not in anim_types:
-                        continue
-                    if key in {"TWINKLE", "FLASH", "CROSSFADE"} and "opacity" not in anim_types:
-                        continue
-                if key == "ROTATE":
-                    speed = float(value.get("speed_dps", 0))
-                    rotation = (elapsed * speed) % 360.0
-                elif key == "FALL":
-                    speed = float(value.get("speed_pps", 0))
-                    offset_y = (elapsed * speed) % layer["h"]
-                elif key == "FLOW_X":
-                    speed = float(value.get("speed_pps", 0))
-                    rng = float(value.get("range_px", layer["w"]))
-                    if rng <= 0:
-                        rng = layer["w"]
-                    offset_x = (elapsed * speed) % rng
+                idx = layer_map.get(layer["asset"])
+                anim_types = self._svg_anim_map.get(idx, set())
+                if key == "ROTATE" and "rotate" not in anim_types and idx is not None:
+                    continue
+                if key in {"FALL", "FLOW_X"} and "translate" not in anim_types and idx is not None:
+                    continue
+                if key in {"TWINKLE", "FLASH", "CROSSFADE"} and "opacity" not in anim_types and idx is not None:
+                    continue
+
+                period_ms = float(value.get("period_ms", 0) or 0)
+                period = period_ms / 1000.0 if period_ms > 0 else 0.0
+                amp_x = float(value.get("amp_x", 0) or 0)
+                amp_y = float(value.get("amp_y", 0) or 0)
+                opa_min = float(value.get("opa_min", 0) or 0) / 255.0
+                opa_max = float(value.get("opa_max", 255) or 255) / 255.0
+                if key == "ROTATE" and period > 0:
+                    rotation = (elapsed / period) * 360.0
+                elif key == "FALL" and period > 0:
+                    fall_dy = float(value.get("fall_dy", 0) or 0)
+                    offset_y = (elapsed / period) * fall_dy
+                elif key == "FLOW_X" and period > 0:
+                    offset_x = (elapsed / period) * amp_x
                 elif key == "JITTER":
-                    amp = float(value.get("amp_px", 0))
-                    offset_x += random.uniform(-amp, amp)
-                    offset_y += random.uniform(-amp, amp)
-                elif key == "DRIFT":
-                    amp = float(value.get("amp_px", 0))
-                    speed = float(value.get("speed_pps", 0))
-                    offset_x += math.sin(elapsed * speed * 0.01) * amp
-                    offset_y += math.cos(elapsed * speed * 0.01) * amp
-                elif key == "TWINKLE":
-                    period = float(value.get("period_ms", 0)) / 1000.0
-                    if period > 0:
-                        opacity *= 0.5 + 0.5 * math.sin(elapsed * 2 * math.pi / period)
-                elif key == "FLASH":
-                    period = float(value.get("period_ms", 0)) / 1000.0
-                    if period > 0:
-                        opacity *= 1.0 if (elapsed % period) < (period / 2) else 0.0
-                elif key == "CROSSFADE":
-                    period = float(value.get("period_ms", 0)) / 1000.0
-                    if period > 0:
-                        opacity *= 0.5 + 0.5 * math.cos(elapsed * 2 * math.pi / period)
+                    offset_x += random.uniform(-amp_x, amp_x)
+                    offset_y += random.uniform(-amp_y, amp_y)
+                elif key == "DRIFT" and period > 0:
+                    offset_x += math.sin(elapsed * 2 * math.pi / period) * amp_x
+                    offset_y += math.cos(elapsed * 2 * math.pi / period) * amp_y
+                elif key == "TWINKLE" and period > 0:
+                    wave = 0.5 + 0.5 * math.sin(elapsed * 2 * math.pi / period)
+                    opacity *= opa_min + wave * (opa_max - opa_min)
+                elif key == "FLASH" and period > 0:
+                    phase = elapsed % period
+                    opacity *= opa_max if phase < (period / 2) else opa_min
+                elif key == "CROSSFADE" and period > 0:
+                    wave = 0.5 + 0.5 * math.cos(elapsed * 2 * math.pi / period)
+                    opacity *= opa_min + wave * (opa_max - opa_min)
 
             img, pivot_offset = _apply_transform_with_pivot(
                 img,
                 rotation,
                 opacity,
-                float(layer.get("pivot_x", img.width / 2)),
-                float(layer.get("pivot_y", img.height / 2)),
+                float(img.width / 2),
+                float(img.height / 2),
             )
-            pivot_x = float(layer.get("pivot_x", img.width / 2))
-            pivot_y = float(layer.get("pivot_y", img.height / 2))
-            draw_x = int(layer["x"] + offset_x + pivot_x - pivot_offset[0])
-            draw_y = int(layer["y"] + offset_y + pivot_y - pivot_offset[1])
+            pivot_x = float(img.width / 2)
+            pivot_y = float(img.height / 2)
+            draw_x = int(offset_x + pivot_x - pivot_offset[0])
+            draw_y = int(offset_y + pivot_y - pivot_offset[1])
             canvas.alpha_composite(img, (draw_x, draw_y))
 
         frame = canvas.resize((int(size_px * scale), int(size_px * scale)))
@@ -361,6 +358,86 @@ class WxSpecQtGui(QtWidgets.QMainWindow):
             return self._current_svg.parent
         return Path.cwd()
 
+    def _default_asset_path(self, asset_key: str, size_px: int) -> str:
+        return f"{asset_key}_{size_px}.png"
+
+    def _spec_layers(self) -> list[dict]:
+        if not self._current_spec:
+            return []
+        layers = self._current_spec.get("layers", [])
+        normalized = []
+        for layer in layers:
+            asset_key = layer.get("asset") or layer.get("asset_key")
+            if not asset_key:
+                continue
+            normalized.append(
+                {
+                    "id": layer.get("id") or asset_key,
+                    "asset": asset_key,
+                    "fx": list(layer.get("fx", [])),
+                }
+            )
+        return normalized
+
+    def _spec_assets(self) -> list[dict]:
+        if not self._current_spec:
+            return []
+        if "assets" in self._current_spec:
+            return list(self._current_spec.get("assets", []))
+        size_px = self._resolve_size_px()
+        assets: dict[str, dict] = {}
+        for layer in self._spec_layers():
+            key = layer["asset"]
+            if key in assets:
+                continue
+            assets[key] = {
+                "asset_key": key,
+                "size_px": size_px,
+                "path": self._default_asset_path(key, size_px),
+            }
+        return list(assets.values())
+
+    def _resolve_size_px(self) -> int:
+        if not self._current_spec:
+            return 64
+        size_px = int(self._current_spec.get("size_px", 0) or 0)
+        if size_px > 0:
+            return size_px
+        if self._current_svg:
+            inferred = self._infer_svg_size(self._current_svg)
+            if inferred:
+                return inferred
+        return 64
+
+    @staticmethod
+    def _infer_svg_size(svg_path: Path) -> int | None:
+        try:
+            tree = ET.parse(svg_path)
+        except ET.ParseError:
+            return None
+        root = tree.getroot()
+        width = root.attrib.get("width")
+        height = root.attrib.get("height")
+        for raw in (width, height):
+            if raw is None:
+                continue
+            cleaned = raw.strip()
+            if cleaned.endswith("px"):
+                cleaned = cleaned[:-2]
+            try:
+                return int(float(cleaned))
+            except ValueError:
+                continue
+        view_box = root.attrib.get("viewBox")
+        if view_box:
+            parts = view_box.replace(",", " ").split()
+            if len(parts) == 4:
+                try:
+                    return int(float(parts[2]))
+                except ValueError:
+                    return None
+        return None
+
     def _load_asset_pixmap(
         self, root: Path, asset: dict, layer_index: int | None
     ) -> QtGui.QPixmap | None:
@@ -371,7 +448,10 @@ class WxSpecQtGui(QtWidgets.QMainWindow):
                 pixmap = QtGui.QPixmap()
                 pixmap.loadFromData(data)
                 return pixmap
-        data = self._get_svg_raster(int(asset.get("size_px", 0)) or 320, layer_index)
+        data = self._get_svg_raster(
+            int(asset.get("size_px", 0)) or self._resolve_size_px(),
+            layer_index,
+        )
         if data is None:
             return None
         pixmap = QtGui.QPixmap()
@@ -380,7 +460,7 @@ class WxSpecQtGui(QtWidgets.QMainWindow):
 
     def _prepare_asset_bitmaps(self) -> None:
         assets_root = self._resolve_assets_root()
-        assets = self._current_spec.get("assets", [])
+        assets = self._spec_assets()
         self._asset_bitmaps.clear()
         layer_map = self._layer_index_map()
         for asset in assets:
@@ -393,7 +473,10 @@ class WxSpecQtGui(QtWidgets.QMainWindow):
                         self._asset_bitmaps[asset["asset_key"]] = image
                     continue
             idx = layer_map.get(asset["asset_key"])
-            fallback = self._get_svg_raster(int(asset.get("size_px", 0)) or 320, idx)
+            fallback = self._get_svg_raster(
+                int(asset.get("size_px", 0)) or self._resolve_size_px(),
+                idx,
+            )
             if fallback is None:
                 continue
             image = _load_pil_image(fallback)
@@ -494,10 +577,10 @@ class WxSpecQtGui(QtWidgets.QMainWindow):
     def _layer_index_map(self) -> dict[str, int]:
         if not self._svg_paths or not self._current_spec:
             return {}
-        layers = sorted(self._current_spec.get("layers", []), key=lambda x: x["z"])
+        layers = self._spec_layers()
         if len(layers) != len(self._svg_paths):
             return {}
-        return {layer["asset_key"]: idx for idx, layer in enumerate(layers)}
+        return {layer["asset"]: idx for idx, layer in enumerate(layers)}
 
     def _update_dependencies(self) -> None:
         entries = [

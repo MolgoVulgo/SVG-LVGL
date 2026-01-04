@@ -1,5 +1,7 @@
 # Plan d’adaptation SVG → LVGL 8.3 (rendu fidèle + animation)
 
+Document explicatif et démonstratif, non normatif.
+
 ## A) Socle commun (factorisé)
 
 ### A1) Constat LVGL
@@ -32,6 +34,8 @@
 * Code: `weather_icon_<name>.c/.h` (composition + anims).
 
 ---
+
+## Exemples de référence
 
 ## B) Icônes traitées
 

@@ -153,7 +153,7 @@ Ces exemples servent de **référence d’intégration**.
 * rasterisation réelle (Inkscape / resvg)
 * packer WXPK v1
 * CLI fonctionnelle
-* GUI PySide6 (orchestrateur)
+* GUI PySide6 (orchestrateur, frontend par défaut : `python -m pipeline.gui_qt`)
 
 #### Runtime (ESP)
 

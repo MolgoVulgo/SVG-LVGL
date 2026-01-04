@@ -104,24 +104,40 @@ def _parse_values_pair(values: str) -> tuple[str, str] | None:
     return parts[0], parts[1]
 
 
-def _parse_rotate_delta(values: str | None, from_value: str | None, to_value: str | None) -> float | None:
+def _parse_rotate_delta(
+    values: str | None, from_value: str | None, to_value: str | None
+) -> tuple[float | None, tuple[int, int] | None]:
+    def _parse_rotate(value: str) -> tuple[float, tuple[int, int] | None]:
+        parts = value.replace(",", " ").split()
+        if not parts:
+            raise ValueError("invalid rotate value")
+        angle = float(parts[0])
+        pivot = None
+        if len(parts) >= 3:
+            pivot = (int(float(parts[1])), int(float(parts[2])))
+        return angle, pivot
+
     if values:
         pair = _parse_values_pair(values)
         if not pair:
-            return None
+            return None, None
         first, second = pair
         try:
-            start = float(first.split()[0])
-            end = float(second.split()[0])
-            return abs(end - start)
+            start, pivot_a = _parse_rotate(first)
+            end, pivot_b = _parse_rotate(second)
+            pivot = pivot_a or pivot_b
+            return abs(end - start), pivot
         except (IndexError, ValueError) as exc:
             raise ValueError("invalid rotate values") from exc
     if from_value and to_value:
         try:
-            return abs(float(to_value) - float(from_value))
+            start, pivot_a = _parse_rotate(from_value)
+            end, pivot_b = _parse_rotate(to_value)
+            pivot = pivot_a or pivot_b
+            return abs(end - start), pivot
         except ValueError as exc:
             raise ValueError("invalid rotate from/to") from exc
-    return None
+    return None, None
 
 
 def _parse_translate_delta(values: str | None, from_value: str | None, to_value: str | None) -> tuple[float, float] | None:
@@ -192,18 +208,20 @@ def _parse_fx_from_animations(
             duration_ms = _parse_duration_ms(elem.attrib.get("dur"))
             target_z = _find_target_z(elem, parents, element_z)
             if transform_type == "rotate" and "ROTATE" not in fx:
-                delta = _parse_rotate_delta(
+                delta, pivot = _parse_rotate_delta(
                     elem.attrib.get("values"),
                     elem.attrib.get("from"),
                     elem.attrib.get("to"),
                 )
                 if duration_ms and duration_ms > 0 and delta is not None:
-                    speed_dps = int(round(delta / (duration_ms / 1000.0)))
-                    fx["ROTATE"] = {
-                        "enabled": True,
+                    rotate_fx = {
+                        "period_ms": int(round(duration_ms)),
                         "target_z": target_z or 0,
-                        "speed_dps": max(speed_dps, 0),
                     }
+                    if pivot is not None:
+                        rotate_fx["pivot_x"] = pivot[0]
+                        rotate_fx["pivot_y"] = pivot[1]
+                    fx["ROTATE"] = rotate_fx
             elif transform_type == "translate":
                 delta = _parse_translate_delta(
                     elem.attrib.get("values"),
@@ -214,20 +232,17 @@ def _parse_fx_from_animations(
                     dx, dy = delta
                     if abs(dy) >= abs(dx):
                         if "FALL" not in fx:
-                            speed_pps = int(round(abs(dy) / (duration_ms / 1000.0)))
                             fx["FALL"] = {
-                                "enabled": True,
+                                "period_ms": int(round(duration_ms)),
                                 "target_z": target_z or 0,
-                                "speed_pps": max(speed_pps, 0),
+                                "fall_dy": int(round(abs(dy))),
                             }
                     else:
                         if "FLOW_X" not in fx:
-                            speed_pps = int(round(abs(dx) / (duration_ms / 1000.0)))
                             fx["FLOW_X"] = {
-                                "enabled": True,
+                                "period_ms": int(round(duration_ms)),
                                 "target_z": target_z or 0,
-                                "speed_pps": max(speed_pps, 0),
-                                "range_px": int(round(abs(dx))),
+                                "amp_x": int(round(abs(dx))),
                     }
         elif tag == "animate":
             if elem.attrib.get("attributeName") == "opacity" and "TWINKLE" not in fx:
@@ -235,9 +250,8 @@ def _parse_fx_from_animations(
                 target_z = _find_target_z(elem, parents, element_z)
                 if duration_ms and duration_ms > 0:
                     fx["TWINKLE"] = {
-                        "enabled": True,
-                        "target_z": target_z or 0,
                         "period_ms": int(round(duration_ms)),
+                        "target_z": target_z or 0,
                     }
     return fx
 

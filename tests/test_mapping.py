@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from pipeline.hash import fnv1a32
 from pipeline.mapping import map_svg_to_spec
 
 
@@ -13,7 +14,7 @@ class MappingTests(unittest.TestCase):
         return Path(handle.name)
 
     def test_minimal_svg_mapping(self) -> None:
-        svg = """<svg width="96" height="96" data-wx-id="clear_day" data-wx-fx-ROTATE='{"enabled": true, "target_z": 10, "speed_dps": 12}' xmlns="http://www.w3.org/2000/svg">
+        svg = """<svg width="96" height="96" data-wx-id="clear_day" data-wx-fx-ROTATE='{"period_ms": 10000, "pivot_x": 0, "pivot_y": 0, "target_z": 10}' xmlns="http://www.w3.org/2000/svg">
   <g data-wx-asset="sun" data-wx-z="10"></g>
 </svg>
 """
@@ -23,12 +24,11 @@ class MappingTests(unittest.TestCase):
         finally:
             path.unlink(missing_ok=True)
 
-        self.assertEqual(spec.id, "clear_day")
-        self.assertEqual(spec.size_px, 96)
-        self.assertEqual(len(spec.assets), 1)
-        self.assertEqual(spec.assets[0].asset_key, "sun")
+        self.assertEqual(spec.name, "clear_day")
+        self.assertEqual(spec.spec_id, fnv1a32("clear_day"))
         self.assertEqual(len(spec.layers), 1)
-        self.assertEqual(spec.layers[0].z, 10)
+        self.assertEqual(spec.layers[0].asset, "sun")
+        self.assertIn("ROTATE", spec.layers[0].fx)
 
     def test_missing_layers(self) -> None:
         svg = """<svg width="96" height="96" data-wx-id="empty" xmlns="http://www.w3.org/2000/svg"></svg>"""
@@ -38,7 +38,7 @@ class MappingTests(unittest.TestCase):
         finally:
             path.unlink(missing_ok=True)
         self.assertEqual(len(spec.layers), 1)
-        self.assertEqual(spec.layers[0].asset_key, "empty")
+        self.assertEqual(spec.layers[0].asset, "empty")
 
     def test_invalid_z_value(self) -> None:
         svg = """<svg width="96" height="96" data-wx-id="bad_z" xmlns="http://www.w3.org/2000/svg">
@@ -86,7 +86,7 @@ class MappingTests(unittest.TestCase):
             spec = map_svg_to_spec(path)
         finally:
             path.unlink(missing_ok=True)
-        self.assertTrue(spec.id)
+        self.assertTrue(spec.name)
 
     def test_auto_fx_from_animations(self) -> None:
         svg = """<svg width="96" height="96" data-wx-id="auto_fx" xmlns="http://www.w3.org/2000/svg">
@@ -100,8 +100,9 @@ class MappingTests(unittest.TestCase):
             spec = map_svg_to_spec(path)
         finally:
             path.unlink(missing_ok=True)
-        self.assertTrue(spec.fx["ROTATE"]["enabled"])
-        self.assertEqual(spec.fx["ROTATE"]["target_z"], 0)
+        self.assertIn("ROTATE", spec.fx)
+        self.assertEqual(spec.fx["ROTATE"]["period_ms"], 10000)
+        self.assertIn("ROTATE", spec.layers[0].fx)
 
 
 if __name__ == "__main__":

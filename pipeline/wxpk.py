@@ -6,42 +6,55 @@ import json
 import struct
 from dataclasses import dataclass
 from pathlib import Path
+import zlib
 
 from pipeline.pack.toc import TOC_ENTRY_SIZE, TocEntry
-from pipeline.spec.model import Spec
+from pipeline.spec.model import Asset, Spec
 from pipeline.wxspec import dumps_spec, validate_spec
 
-MAGIC = b"WXPK"
-VERSION_MAJOR = 1
-VERSION_MINOR = 0
-HEADER_STRUCT = struct.Struct("<4sHHIIIIII")
+MAGIC = 0x4B505857
+VERSION = 1
+ENDIAN_LITTLE = 0
+HEADER_STRUCT = struct.Struct("<I H B B I I I I I I")
 HEADER_SIZE = HEADER_STRUCT.size
 
-TYPE_CODES = {"image": 1, "mask": 2, "alpha": 3}
+WXPK_T_IMG = 1
+WXPK_T_JSON_INDEX = 2
+WXPK_T_JSON_SPEC = 3
+WXPK_T_JSON_ALL = 4
+
+WXPK_C_NONE = 0
+WXPK_C_LVGL_BIN = 1
+WXPK_C_PNG = 2
+WXPK_C_RAW_RGBA8888 = 3
+
+_ASSET_DEFAULT_CODEC = WXPK_C_LVGL_BIN
 
 
 @dataclass
 class PackHeader:
-    magic: bytes
-    version_major: int
-    version_minor: int
-    toc_count: int
+    magic: int
+    version: int
+    endian: int
+    header_size: int
+    flags: int
     toc_offset: int
-    json_offset: int
-    json_size: int
-    pack_size: int
+    toc_count: int
+    blobs_offset: int
+    file_crc32: int
     reserved: int = 0
 
     def to_bytes(self) -> bytes:
         return HEADER_STRUCT.pack(
             self.magic,
-            self.version_major,
-            self.version_minor,
-            self.toc_count,
+            self.version,
+            self.endian,
+            self.header_size,
+            self.flags,
             self.toc_offset,
-            self.json_offset,
-            self.json_size,
-            self.pack_size,
+            self.toc_count,
+            self.blobs_offset,
+            self.file_crc32,
             self.reserved,
         )
 
@@ -53,68 +66,109 @@ class PackHeader:
         return cls(*fields)
 
 
+def _align_up(value: int, alignment: int = 4) -> int:
+    if alignment <= 0:
+        return value
+    return (value + alignment - 1) // alignment * alignment
+
+
 def _json_bytes(spec: Spec) -> bytes:
     json_text = dumps_spec(spec, indent=2)
-    return json_text.encode("utf-8") + b"\x00"
+    return json_text.encode("utf-8")
 
 
-def build_pack(spec: Spec, payloads: dict[str, bytes]) -> bytes:
-    validate_spec(spec)
+def _asset_codec(asset: Asset) -> int:
+    return _ASSET_DEFAULT_CODEC
+
+
+def build_pack(specs: list[Spec], assets: list[Asset], payloads: dict[str, bytes]) -> bytes:
+    if not specs:
+        raise ValueError("specs list is empty")
+
+    for spec in specs:
+        validate_spec(spec)
 
     toc_entries: list[TocEntry] = []
-    payload_blob = bytearray()
-    toc_offset = HEADER_SIZE
-    toc_count = len(spec.assets)
-    payload_offset = toc_offset + toc_count * TOC_ENTRY_SIZE
+    blobs: list[bytes] = []
 
-    for asset in spec.assets:
+    toc_offset = HEADER_SIZE
+    toc_count = len(assets) + len(specs)
+    blobs_offset = _align_up(toc_offset + toc_count * TOC_ENTRY_SIZE, 4)
+    current_offset = blobs_offset
+
+    for asset in assets:
         payload = payloads.get(asset.asset_key)
         if payload is None:
             raise KeyError(f"missing payload for asset {asset.asset_key!r}")
-        type_code = TYPE_CODES.get(asset.type)
-        if type_code is None:
-            raise ValueError(f"invalid asset type: {asset.type!r}")
-        entry = TocEntry(
-            asset_hash=asset.asset_hash,
-            size_px=asset.size_px,
-            type_code=type_code,
-            payload_offset=payload_offset,
-            payload_size=len(payload),
+        codec = _asset_codec(asset)
+        crc32 = zlib.crc32(payload) & 0xFFFFFFFF
+        toc_entries.append(
+            TocEntry(
+                key_hash=int(asset.asset_hash),
+                type_code=WXPK_T_IMG,
+                codec=codec,
+                size_px=asset.size_px,
+                offset=current_offset,
+                length=len(payload),
+                crc32=crc32,
+                meta=0,
+            )
         )
-        toc_entries.append(entry)
-        payload_blob.extend(payload)
-        payload_offset += len(payload)
+        blobs.append(payload)
+        current_offset = _align_up(current_offset + len(payload), 4)
 
-    json_data = _json_bytes(spec)
-    json_offset = toc_offset + toc_count * TOC_ENTRY_SIZE + len(payload_blob)
-    pack_size = json_offset + len(json_data)
+    for spec in specs:
+        json_data = _json_bytes(spec)
+        crc32 = zlib.crc32(json_data) & 0xFFFFFFFF
+        toc_entries.append(
+            TocEntry(
+                key_hash=int(spec.spec_id),
+                type_code=WXPK_T_JSON_SPEC,
+                codec=WXPK_C_NONE,
+                size_px=0,
+                offset=current_offset,
+                length=len(json_data),
+                crc32=crc32,
+                meta=0,
+            )
+        )
+        blobs.append(json_data)
+        current_offset = _align_up(current_offset + len(json_data), 4)
 
     header = PackHeader(
         magic=MAGIC,
-        version_major=VERSION_MAJOR,
-        version_minor=VERSION_MINOR,
-        toc_count=toc_count,
+        version=VERSION,
+        endian=ENDIAN_LITTLE,
+        header_size=HEADER_SIZE,
+        flags=0,
         toc_offset=toc_offset,
-        json_offset=json_offset,
-        json_size=len(json_data),
-        pack_size=pack_size,
+        toc_count=toc_count,
+        blobs_offset=blobs_offset,
+        file_crc32=0,
     )
 
     output = bytearray()
     output.extend(header.to_bytes())
     for entry in toc_entries:
         output.extend(entry.to_bytes())
-    output.extend(payload_blob)
-    output.extend(json_data)
+    if len(output) < blobs_offset:
+        output.extend(b"\x00" * (blobs_offset - len(output)))
+
+    for blob in blobs:
+        output.extend(blob)
+        padded = _align_up(len(output), 4)
+        if padded != len(output):
+            output.extend(b"\x00" * (padded - len(output)))
+
     return bytes(output)
 
 
-def build_pack_from_files(spec: Spec, root: Path) -> bytes:
+def build_pack_from_files(specs: list[Spec], assets: list[Asset], root: Path) -> bytes:
     payloads: dict[str, bytes] = {}
-    for asset in spec.assets:
+    for asset in assets:
         payload_path = root / asset.path
         payloads[asset.asset_key] = payload_path.read_bytes()
-    return build_pack(spec, payloads)
+    return build_pack(specs, assets, payloads)
 
 
 def parse_header(data: bytes) -> PackHeader:
@@ -123,14 +177,16 @@ def parse_header(data: bytes) -> PackHeader:
     header = PackHeader.from_bytes(data[:HEADER_SIZE])
     if header.magic != MAGIC:
         raise ValueError("invalid WXPK magic")
-    if header.version_major != VERSION_MAJOR:
-        raise ValueError("unsupported major version")
-    if header.pack_size != len(data):
-        raise ValueError("pack_size mismatch")
-    if header.toc_offset != HEADER_SIZE:
-        raise ValueError("unexpected toc_offset")
-    if header.json_offset + header.json_size > len(data):
-        raise ValueError("json out of bounds")
+    if header.version != VERSION:
+        raise ValueError("unsupported pack version")
+    if header.endian != ENDIAN_LITTLE:
+        raise ValueError("unsupported endian")
+    if header.header_size != HEADER_SIZE:
+        raise ValueError("unexpected header_size")
+    if header.toc_offset < HEADER_SIZE:
+        raise ValueError("invalid toc_offset")
+    if header.blobs_offset < header.toc_offset + header.toc_count * TOC_ENTRY_SIZE:
+        raise ValueError("invalid blobs_offset")
     return header
 
 
@@ -147,10 +203,23 @@ def parse_toc(data: bytes, header: PackHeader) -> list[TocEntry]:
     return entries
 
 
-def extract_json(data: bytes) -> dict:
+def find_entry(entries: list[TocEntry], key_hash: int, type_code: int, size_px: int) -> TocEntry | None:
+    for entry in entries:
+        if (
+            entry.key_hash == key_hash
+            and entry.type_code == type_code
+            and entry.size_px == size_px
+        ):
+            return entry
+    return None
+
+
+def extract_json_spec(data: bytes, spec_id: int) -> dict:
     header = parse_header(data)
-    json_raw = data[header.json_offset : header.json_offset + header.json_size]
-    if not json_raw or json_raw[-1] != 0:
-        raise ValueError("json not null terminated")
-    json_text = json_raw[:-1].decode("utf-8")
+    entries = parse_toc(data, header)
+    entry = find_entry(entries, spec_id, WXPK_T_JSON_SPEC, 0)
+    if entry is None:
+        raise ValueError("spec_id not found in pack")
+    json_raw = data[entry.offset : entry.offset + entry.length]
+    json_text = json_raw.decode("utf-8")
     return json.loads(json_text)

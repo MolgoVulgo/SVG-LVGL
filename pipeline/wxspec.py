@@ -5,39 +5,26 @@ from __future__ import annotations
 import json
 from typing import Iterable
 
-from pipeline.spec.model import ASSET_TYPES, FX_KEYS, Asset, Layer, Spec, default_fx
+from pipeline.spec.model import Components, FX_KEYS, LayerSpec, Metadata, Spec, spec_id_for_name
 from pipeline.validation.fx import validate_fx
 from pipeline.validation.layers import validate_layers
 
 
 def validate_spec(spec: Spec) -> None:
-    if spec.version != "wx.spec.v1":
-        raise ValueError("invalid spec version")
-    if not spec.id:
-        raise ValueError("spec id is required")
-    if not spec.assets:
-        raise ValueError("spec assets list is empty")
+    if spec.spec_id is None:
+        raise ValueError("spec_id is required")
+    if spec.spec_id != spec_id_for_name(spec.name):
+        raise ValueError("spec_id does not match name")
     if not spec.layers:
         raise ValueError("spec layers list is empty")
+    if spec.metadata.version != 1:
+        raise ValueError("metadata.version must be 1")
+    if spec.metadata.confidence is not None:
+        if not (0.0 <= spec.metadata.confidence <= 1.0):
+            raise ValueError("metadata.confidence must be 0..1")
 
-    assets_by_key = {asset.asset_key: asset for asset in spec.assets}
-    for asset in spec.assets:
-        if asset.type not in ASSET_TYPES:
-            raise ValueError(f"invalid asset type: {asset.type!r}")
-        if asset.size_px != spec.size_px:
-            raise ValueError("asset size_px must match spec size_px")
-        if not (0 <= asset.asset_hash <= 0xFFFFFFFF):
-            raise ValueError("asset_hash out of range")
-
-    validate_layers(spec.layers, assets_by_key)
-    validate_fx(spec.fx, layer_z=(layer.z for layer in spec.layers))
-
-
-def ensure_fx_complete(overrides: dict | None = None) -> dict:
-    fx = default_fx()
-    if overrides:
-        fx.update(overrides)
-    return fx
+    validate_fx(spec.fx)
+    validate_layers(spec.layers, fx_keys=set(spec.fx.keys()))
 
 
 def spec_to_dict(spec: Spec) -> dict:
@@ -55,52 +42,50 @@ def dumps_spec_list(specs: Iterable[Spec], *, indent: int = 2) -> str:
 
 
 def parse_spec_dict(data: dict) -> Spec:
-    if data.get("version") != "wx.spec.v1":
-        raise ValueError("invalid spec version")
-    if "assets" not in data or "layers" not in data or "fx" not in data:
+    required = {"spec_id", "name", "components", "layers", "fx", "metadata"}
+    if not required.issubset(set(data.keys())):
         raise ValueError("missing required keys in spec")
 
-    assets = []
-    for asset_data in data["assets"]:
-        assets.append(
-            Asset(
-                asset_key=asset_data["asset_key"],
-                asset_hash=asset_data.get("asset_hash"),
-                type=asset_data["type"],
-                size_px=asset_data["size_px"],
-                path=asset_data["path"],
-            )
-        )
+    components = data["components"]
+    component = Components(
+        decor=components["decor"],
+        cover=components["cover"],
+        particles=components["particles"],
+        atmos=components["atmos"],
+        event=components["event"],
+    )
 
     layers = []
     for layer_data in data["layers"]:
         layers.append(
-            Layer(
-                z=layer_data["z"],
-                asset_key=layer_data["asset_key"],
-                x=layer_data["x"],
-                y=layer_data["y"],
-                w=layer_data["w"],
-                h=layer_data["h"],
-                pivot_x=layer_data["pivot_x"],
-                pivot_y=layer_data["pivot_y"],
-                opacity=layer_data["opacity"],
+            LayerSpec(
+                layer_id=layer_data["id"],
+                asset=layer_data["asset"],
+                fx=list(layer_data.get("fx", [])),
             )
         )
 
-    fx = ensure_fx_complete()
+    fx = {}
     fx_data = data["fx"]
-    for key in fx_data:
+    for key, value in fx_data.items():
         if key not in FX_KEYS:
             raise ValueError(f"unknown fx key: {key}")
-        fx[key] = fx_data[key]
+        fx[key] = value
+
+    metadata = data["metadata"]
+    meta = Metadata(
+        version=metadata.get("version", 0),
+        created_by=metadata.get("created_by"),
+        confidence=metadata.get("confidence"),
+    )
 
     spec = Spec(
-        id=data["id"],
-        size_px=data["size_px"],
-        assets=assets,
+        spec_id=data["spec_id"],
+        name=data["name"],
+        components=component,
         layers=layers,
         fx=fx,
+        metadata=meta,
     )
     validate_spec(spec)
     return spec

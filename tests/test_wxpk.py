@@ -1,65 +1,85 @@
 import unittest
 
-from pipeline.spec.model import Asset, Layer, Spec
-from pipeline.wxspec import ensure_fx_complete
+from pipeline.hash import fnv1a32
 from pipeline.pack.toc import TOC_ENTRY_SIZE
-from pipeline.wxpk import HEADER_SIZE, MAGIC, build_pack, extract_json, parse_header, parse_toc
+from pipeline.spec.model import Asset, Components, LayerSpec, Metadata, Spec
+from pipeline.wxpk import (
+    HEADER_SIZE,
+    MAGIC,
+    WXPK_T_IMG,
+    WXPK_T_JSON_SPEC,
+    build_pack,
+    extract_json_spec,
+    parse_header,
+    parse_toc,
+)
 
 
 class WxpkPackTests(unittest.TestCase):
     def _make_spec(self) -> Spec:
-        assets = [
-            Asset(asset_key="sun", size_px=96, type="image", path="sun_96.bin"),
-        ]
         layers = [
-            Layer(
-                z=10,
-                asset_key="sun",
-                x=0,
-                y=0,
-                w=96,
-                h=96,
-                pivot_x=48,
-                pivot_y=48,
-                opacity=255,
-            )
+            LayerSpec(layer_id="sun", asset="sun", fx=["ROTATE"])
         ]
-        fx = ensure_fx_complete()
-        fx["ROTATE"].enabled = True
-        fx["ROTATE"].target_z = 10
-        fx["ROTATE"].speed_dps = 12
-        return Spec(id="clear_day", size_px=96, assets=assets, layers=layers, fx=fx)
+        fx = {"ROTATE": {"period_ms": 10000, "pivot_x": 0, "pivot_y": 0}}
+        return Spec(
+            spec_id=fnv1a32("clear_day"),
+            name="clear_day",
+            components=Components(
+                decor="NONE",
+                cover="NONE",
+                particles="NONE",
+                atmos="NONE",
+                event="NONE",
+            ),
+            layers=layers,
+            fx=fx,
+            metadata=Metadata(version=1),
+        )
+
+    @staticmethod
+    def _align_up(value: int, alignment: int = 4) -> int:
+        return (value + alignment - 1) // alignment * alignment
 
     def test_build_pack_header_and_offsets(self) -> None:
         spec = self._make_spec()
+        assets = [
+            Asset(asset_key="sun", size_px=96, type="image", path="sun_96.bin"),
+        ]
         payloads = {"sun": b"abcd"}
-        pack = build_pack(spec, payloads)
+        pack = build_pack([spec], assets, payloads)
 
         header = parse_header(pack)
         self.assertEqual(header.magic, MAGIC)
-        self.assertEqual(header.toc_count, 1)
+        self.assertEqual(header.toc_count, 2)
         self.assertEqual(header.toc_offset, HEADER_SIZE)
+        expected_blobs_offset = self._align_up(
+            HEADER_SIZE + header.toc_count * TOC_ENTRY_SIZE
+        )
+        self.assertEqual(header.blobs_offset, expected_blobs_offset)
 
         toc_entries = parse_toc(pack, header)
-        self.assertEqual(len(toc_entries), 1)
-        entry = toc_entries[0]
-        expected_payload_offset = HEADER_SIZE + TOC_ENTRY_SIZE
-        self.assertEqual(entry.payload_offset, expected_payload_offset)
-        self.assertEqual(entry.payload_size, len(payloads["sun"]))
-
-        expected_json_offset = expected_payload_offset + len(payloads["sun"])
-        self.assertEqual(header.json_offset, expected_json_offset)
-        self.assertEqual(header.pack_size, len(pack))
+        self.assertEqual(len(toc_entries), 2)
+        asset_entry = toc_entries[0]
+        json_entry = toc_entries[1]
+        self.assertEqual(asset_entry.type_code, WXPK_T_IMG)
+        self.assertEqual(asset_entry.offset, expected_blobs_offset)
+        self.assertEqual(asset_entry.length, len(payloads["sun"]))
+        expected_json_offset = self._align_up(asset_entry.offset + asset_entry.length)
+        self.assertEqual(json_entry.type_code, WXPK_T_JSON_SPEC)
+        self.assertEqual(json_entry.offset, expected_json_offset)
 
     def test_extract_json(self) -> None:
         spec = self._make_spec()
+        assets = [
+            Asset(asset_key="sun", size_px=96, type="image", path="sun_96.bin"),
+        ]
         payloads = {"sun": b"data"}
-        pack = build_pack(spec, payloads)
+        pack = build_pack([spec], assets, payloads)
 
-        json_data = extract_json(pack)
-        self.assertEqual(json_data["id"], "clear_day")
-        self.assertEqual(json_data["size_px"], 96)
-        self.assertEqual(json_data["version"], "wx.spec.v1")
+        json_data = extract_json_spec(pack, spec.spec_id)
+        self.assertEqual(json_data["name"], "clear_day")
+        self.assertEqual(json_data["spec_id"], fnv1a32("clear_day"))
+        self.assertEqual(json_data["metadata"]["version"], 1)
 
     def test_multi_asset_offsets(self) -> None:
         assets = [
@@ -67,47 +87,41 @@ class WxpkPackTests(unittest.TestCase):
             Asset(asset_key="cloud", size_px=96, type="image", path="cloud_96.bin"),
         ]
         layers = [
-            Layer(
-                z=10,
-                asset_key="sun",
-                x=0,
-                y=0,
-                w=96,
-                h=96,
-                pivot_x=48,
-                pivot_y=48,
-                opacity=255,
-            ),
-            Layer(
-                z=20,
-                asset_key="cloud",
-                x=0,
-                y=0,
-                w=96,
-                h=96,
-                pivot_x=48,
-                pivot_y=48,
-                opacity=255,
-            ),
+            LayerSpec(layer_id="sun", asset="sun", fx=[]),
+            LayerSpec(layer_id="cloud", asset="cloud", fx=[]),
         ]
-        fx = ensure_fx_complete()
-        fx["ROTATE"].enabled = True
-        fx["ROTATE"].target_z = 10
-        fx["ROTATE"].speed_dps = 12
-        spec = Spec(id="cloudy", size_px=96, assets=assets, layers=layers, fx=fx)
+        fx = {}
+        spec = Spec(
+            spec_id=fnv1a32("cloudy"),
+            name="cloudy",
+            components=Components(
+                decor="NONE",
+                cover="NONE",
+                particles="NONE",
+                atmos="NONE",
+                event="NONE",
+            ),
+            layers=layers,
+            fx=fx,
+            metadata=Metadata(version=1),
+        )
 
         payloads = {"sun": b"a", "cloud": b"bc"}
-        pack = build_pack(spec, payloads)
+        pack = build_pack([spec], assets, payloads)
         header = parse_header(pack)
         toc_entries = parse_toc(pack, header)
 
-        self.assertEqual(len(toc_entries), 2)
+        self.assertEqual(len(toc_entries), 3)
         first = toc_entries[0]
         second = toc_entries[1]
-        self.assertEqual(first.payload_offset, HEADER_SIZE + 2 * TOC_ENTRY_SIZE)
-        self.assertEqual(second.payload_offset, first.payload_offset + first.payload_size)
-        expected_json_offset = second.payload_offset + second.payload_size
-        self.assertEqual(header.json_offset, expected_json_offset)
+        json_entry = toc_entries[2]
+        expected_first_offset = self._align_up(
+            HEADER_SIZE + len(toc_entries) * TOC_ENTRY_SIZE
+        )
+        self.assertEqual(first.offset, expected_first_offset)
+        self.assertEqual(second.offset, self._align_up(first.offset + first.length))
+        expected_json_offset = self._align_up(second.offset + second.length)
+        self.assertEqual(json_entry.offset, expected_json_offset)
 
 
 if __name__ == "__main__":

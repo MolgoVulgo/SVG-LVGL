@@ -10,11 +10,30 @@ from pipeline.mapping import map_svg_to_spec
 from pipeline.wxpk import build_pack_from_files
 from pipeline.wxspec import dumps_spec
 from pipeline.wxspec import parse_spec_dict
+from pipeline.spec.model import Asset
 
 
 def _load_spec(path: Path) -> dict:
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def _load_manifest(path: Path) -> list[Asset]:
+    with path.open("r", encoding="utf-8") as handle:
+        data = json.load(handle)
+    assets = []
+    for entry in data.get("assets", []):
+        assets.append(
+            Asset(
+                asset_key=entry["asset_key"],
+                size_px=entry["size_px"],
+                type=entry.get("type", "image"),
+                path=entry["path"],
+            )
+        )
+    if not assets:
+        raise ValueError("manifest contains no assets")
+    return assets
 
 
 def _cmd_pack(args: argparse.Namespace) -> int:
@@ -25,8 +44,10 @@ def _cmd_pack(args: argparse.Namespace) -> int:
     assets_root = Path(args.assets_root) if args.assets_root else spec_path.parent
     spec_dict = _load_spec(spec_path)
     spec = parse_spec_dict(spec_dict)
+    manifest_path = Path(args.manifest)
+    assets = _load_manifest(manifest_path)
 
-    pack = build_pack_from_files(spec, assets_root)
+    pack = build_pack_from_files([spec], assets, assets_root)
     output_path = Path(args.output)
     output_path.write_bytes(pack)
     return 0
@@ -59,7 +80,9 @@ def _cmd_map_pack(args: argparse.Namespace) -> int:
     )
 
     assets_root = Path(args.assets_root) if args.assets_root else svg_path.parent
-    pack = build_pack_from_files(spec, assets_root)
+    manifest_path = Path(args.manifest)
+    assets = _load_manifest(manifest_path)
+    pack = build_pack_from_files([spec], assets, assets_root)
     output_path = Path(args.output)
     output_path.write_bytes(pack)
     return 0
@@ -77,6 +100,7 @@ def main() -> int:
 
     pack_parser = subparsers.add_parser("pack", help="Build WXPK v1 from JSON spec")
     pack_parser.add_argument("--spec", required=True, help="Path to wx.spec v1 JSON")
+    pack_parser.add_argument("--manifest", required=True, help="Path to assets manifest JSON")
     pack_parser.add_argument(
         "--assets-root",
         help="Root directory for asset payloads (defaults to spec directory)",
@@ -115,6 +139,7 @@ def main() -> int:
         "--assets-root",
         help="Root directory for asset payloads (defaults to SVG directory)",
     )
+    map_pack_parser.add_argument("--manifest", required=True, help="Path to assets manifest JSON")
     map_pack_parser.add_argument("--output", required=True, help="Output pack file")
     map_pack_parser.set_defaults(func=_cmd_map_pack)
 
