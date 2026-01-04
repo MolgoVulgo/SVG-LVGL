@@ -104,6 +104,30 @@ class MappingTests(unittest.TestCase):
         self.assertEqual(spec.fx["ROTATE"]["period_ms"], 10000)
         self.assertIn("ROTATE", spec.layers[0].fx)
 
+    def test_gradient_clone_reuse(self) -> None:
+        svg = """<svg width="64" height="64" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+  <defs>
+    <linearGradient id="c" x1="0" y1="0" x2="1" y2="1" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#4286ee"/>
+      <stop offset="1" stop-color="#0950bc"/>
+    </linearGradient>
+    <linearGradient id="d" x1="0" y1="0" x2="1" y2="1" xlink:href="#c"/>
+    <linearGradient id="e" x1="0" y1="0" x2="1" y2="1" xlink:href="#c"/>
+  </defs>
+  <line x1="0" y1="0" x2="0" y2="10" stroke="url(#c)" stroke-width="2"/>
+  <line x1="10" y1="0" x2="10" y2="10" stroke="url(#d)" stroke-width="2"/>
+  <line x1="20" y1="0" x2="20" y2="10" stroke="url(#e)" stroke-width="2"/>
+</svg>
+"""
+        path = self._write_svg(svg)
+        try:
+            spec = map_svg_to_spec(path)
+        finally:
+            path.unlink(missing_ok=True)
+        self.assertEqual(len(spec.layers), 3)
+        self.assertEqual(spec.layers[1].asset, spec.layers[0].asset)
+        self.assertEqual(spec.layers[2].asset, spec.layers[0].asset)
+
 
 if __name__ == "__main__":
     unittest.main()

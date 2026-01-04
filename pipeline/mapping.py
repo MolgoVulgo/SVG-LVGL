@@ -34,11 +34,12 @@ def _layers_from_svg(svg: SvgDocument) -> list[LayerSpec]:
     used_ids: set[str] = set()
     for raw in sorted(svg.layers, key=lambda layer: layer.z):
         base_id = normalize_asset_key(raw.asset_key)
+        asset_key = normalize_asset_key(raw.asset_ref or raw.asset_key)
         layer_id = _unique_layer_id(base_id, used_ids)
         layers.append(
             LayerSpec(
                 layer_id=layer_id,
-                asset=base_id,
+                asset=asset_key,
                 fx=[],
             )
         )

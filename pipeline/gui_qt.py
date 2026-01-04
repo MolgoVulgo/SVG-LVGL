@@ -67,13 +67,34 @@ class WxSpecQtGui(QtWidgets.QMainWindow):
         splitter = QtWidgets.QSplitter()
         splitter.setOrientation(QtCore.Qt.Orientation.Horizontal)
 
+        left = QtWidgets.QWidget()
+        left_layout = QtWidgets.QVBoxLayout(left)
+        left_layout.setContentsMargins(6, 6, 6, 6)
+
+        self._svg_source_label = QtWidgets.QLabel("SVG source")
+        left_layout.addWidget(self._svg_source_label, stretch=0)
+        self._svg_source = QtWidgets.QPlainTextEdit()
+        self._svg_source.setReadOnly(True)
+        self._svg_source.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap)
+        left_layout.addWidget(self._svg_source, stretch=3)
+
+        self._json_label = QtWidgets.QLabel("JSON")
+        left_layout.addWidget(self._json_label, stretch=0)
         self._text = QtWidgets.QPlainTextEdit()
         self._text.setLineWrapMode(QtWidgets.QPlainTextEdit.LineWrapMode.NoWrap)
-        splitter.addWidget(self._text)
+        left_layout.addWidget(self._text, stretch=2)
+
+        splitter.addWidget(left)
 
         right = QtWidgets.QWidget()
         right_layout = QtWidgets.QVBoxLayout(right)
         right_layout.setContentsMargins(6, 6, 6, 6)
+
+        self._deps_box = QtWidgets.QGroupBox("Dependencies")
+        deps_layout = QtWidgets.QFormLayout(self._deps_box)
+        self._deps_label = QtWidgets.QLabel()
+        deps_layout.addRow(self._deps_label)
+        right_layout.addWidget(self._deps_box, stretch=0)
 
         self._tabs = QtWidgets.QTabWidget()
         right_layout.addWidget(self._tabs, stretch=2)
@@ -102,12 +123,6 @@ class WxSpecQtGui(QtWidgets.QMainWindow):
         self._tabs.addTab(self._final_tab, "Final")
 
         self._tabs.currentChanged.connect(self._refresh)
-
-        deps_box = QtWidgets.QGroupBox("Dependencies")
-        deps_layout = QtWidgets.QFormLayout(deps_box)
-        self._deps_label = QtWidgets.QLabel()
-        deps_layout.addRow(self._deps_label)
-        right_layout.addWidget(deps_box, stretch=0)
 
         fx_box = QtWidgets.QGroupBox("FX Enabled")
         fx_layout = QtWidgets.QVBoxLayout(fx_box)
@@ -141,6 +156,7 @@ class WxSpecQtGui(QtWidgets.QMainWindow):
         self._svg_raster_cache.clear()
         self._prepare_svg_layers(svg_path)
         self._current_path = None
+        self._svg_source.setPlainText(svg_path.read_text(encoding="utf-8"))
         self._text.setPlainText(dumps_spec(spec, indent=2))
         self._refresh()
 
@@ -508,7 +524,18 @@ class WxSpecQtGui(QtWidgets.QMainWindow):
             return
         root = tree.getroot()
         parents = {child: parent for parent in root.iter() for child in list(parent)}
-        drawable = {"path", "circle", "rect", "ellipse", "line", "polyline", "polygon", "g"}
+        id_map = {elem.attrib["id"]: elem for elem in root.iter() if "id" in elem.attrib}
+        drawable = {
+            "path",
+            "circle",
+            "rect",
+            "ellipse",
+            "line",
+            "polyline",
+            "polygon",
+            "g",
+            "use",
+        }
         paths: list[tuple[int, ...]] = []
         anim_map: dict[int, set[str]] = {}
 
@@ -524,11 +551,96 @@ class WxSpecQtGui(QtWidgets.QMainWindow):
                 current = parent
             return tuple(reversed(parts))
 
+        def _is_in_defs(elem: ET.Element) -> bool:
+            current = elem
+            while current is not None:
+                if _strip_ns(current.tag) == "defs":
+                    return True
+                current = parents.get(current)
+            return False
+
+        def _use_href(elem: ET.Element) -> str | None:
+            href = elem.attrib.get("href")
+            if href is None:
+                href = elem.attrib.get("{http://www.w3.org/1999/xlink}href")
+            if href is None:
+                href = elem.attrib.get("xlink:href")
+            if href is None:
+                return None
+            return href.lstrip("#")
+
+        def _is_drawable_target(elem: ET.Element, visited: set[ET.Element]) -> bool:
+            if elem in visited:
+                return False
+            visited.add(elem)
+            tag = _strip_ns(elem.tag)
+            if tag not in drawable:
+                return False
+            if tag == "use":
+                ref = _use_href(elem)
+                if not ref:
+                    return False
+                target = id_map.get(ref)
+                if target is None:
+                    return False
+                return _is_drawable_target(target, visited)
+            if tag == "g":
+                for child in list(elem):
+                    if _is_drawable_target(child, visited):
+                        return True
+                return False
+            if tag == "path":
+                return bool(elem.attrib.get("d"))
+            if tag == "circle":
+                return "r" in elem.attrib
+            if tag == "ellipse":
+                return "rx" in elem.attrib and "ry" in elem.attrib
+            if tag == "rect":
+                return "width" in elem.attrib and "height" in elem.attrib
+            if tag == "line":
+                return all(k in elem.attrib for k in ("x1", "y1", "x2", "y2"))
+            if tag in {"polyline", "polygon"}:
+                return "points" in elem.attrib
+            return True
+
+        def _is_drawable_element(elem: ET.Element) -> bool:
+            if _is_in_defs(elem):
+                return False
+            tag = _strip_ns(elem.tag)
+            if tag not in drawable:
+                return False
+            if tag == "use":
+                ref = _use_href(elem)
+                if not ref:
+                    return False
+                target = id_map.get(ref)
+                if target is None:
+                    return False
+                return _is_drawable_target(target, set())
+            if tag == "g":
+                for child in list(elem):
+                    if _is_drawable_element(child):
+                        return True
+                return False
+            if tag == "path":
+                return bool(elem.attrib.get("d"))
+            if tag == "circle":
+                return "r" in elem.attrib
+            if tag == "ellipse":
+                return "rx" in elem.attrib and "ry" in elem.attrib
+            if tag == "rect":
+                return "width" in elem.attrib and "height" in elem.attrib
+            if tag == "line":
+                return all(k in elem.attrib for k in ("x1", "y1", "x2", "y2"))
+            if tag in {"polyline", "polygon"}:
+                return "points" in elem.attrib
+            return True
+
         for elem in root.iter():
             tag = _strip_ns(elem.tag)
             if tag == "defs":
                 continue
-            if tag in drawable:
+            if tag in drawable and _is_drawable_element(elem):
                 index = len(paths)
                 paths.append(_path_to(elem))
                 anim_map[index] = self._element_anim_types(elem)
@@ -588,7 +700,12 @@ class WxSpecQtGui(QtWidgets.QMainWindow):
             ("cairosvg", "OK" if _has_cairosvg() else "missing"),
             ("rsvg-convert", "OK" if _has_rsvg() else "missing"),
         ]
-        text = " | ".join(f"{name}: {status}" for name, status in entries)
+        missing = [(name, status) for name, status in entries if status != "OK"]
+        if not missing:
+            self._deps_box.hide()
+            return
+        self._deps_box.show()
+        text = " | ".join(f"{name}: {status}" for name, status in missing)
         self._deps_label.setText(text)
 
     @staticmethod

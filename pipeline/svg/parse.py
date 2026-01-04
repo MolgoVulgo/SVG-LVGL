@@ -15,6 +15,7 @@ from pipeline.spec.model import FX_KEYS
 class SvgLayer:
     z: int
     asset_key: str
+    asset_ref: str | None
     x: int
     y: int
     w: int | None
@@ -81,6 +82,157 @@ def _is_in_defs(elem: ET.Element, parents: dict[ET.Element, ET.Element]) -> bool
             return True
         current = parents.get(current)
     return False
+
+
+def _use_href(elem: ET.Element) -> str | None:
+    href = elem.attrib.get("href")
+    if href is None:
+        href = elem.attrib.get("{http://www.w3.org/1999/xlink}href")
+    if href is None:
+        href = elem.attrib.get("xlink:href")
+    if href is None:
+        return None
+    return href.lstrip("#")
+
+
+def _paint_href(value: str | None) -> str | None:
+    if not value:
+        return None
+    raw = value.strip()
+    if not raw.startswith("url("):
+        return None
+    if "#" not in raw:
+        return None
+    ref = raw.split("#", 1)[1].rstrip(")")
+    return ref.strip()
+
+
+def _resolve_paint_id(paint: str | None, id_map: dict[str, ET.Element]) -> str | None:
+    ref = _paint_href(paint)
+    if not ref:
+        return None
+    current = id_map.get(ref)
+    visited: set[str] = set()
+    while current is not None:
+        current_id = current.attrib.get("id")
+        if not current_id or current_id in visited:
+            break
+        visited.add(current_id)
+        href = _use_href(current)
+        if not href:
+            return current_id
+        current = id_map.get(href)
+    return ref
+
+
+def _signature_for_element(
+    elem: ET.Element,
+    id_map: dict[str, ET.Element],
+) -> tuple | None:
+    tag = _strip_ns(elem.tag)
+    if tag == "line":
+        try:
+            x1 = float(elem.attrib.get("x1", "0"))
+            y1 = float(elem.attrib.get("y1", "0"))
+            x2 = float(elem.attrib.get("x2", "0"))
+            y2 = float(elem.attrib.get("y2", "0"))
+        except ValueError:
+            return None
+        dx = round(x2 - x1, 3)
+        dy = round(y2 - y1, 3)
+        stroke_width = elem.attrib.get("stroke-width")
+        stroke_linecap = elem.attrib.get("stroke-linecap")
+        stroke_miter = elem.attrib.get("stroke-miterlimit")
+        paint_id = _resolve_paint_id(elem.attrib.get("stroke"), id_map)
+        return (
+            "line",
+            dx,
+            dy,
+            stroke_width,
+            stroke_linecap,
+            stroke_miter,
+            paint_id,
+        )
+    return None
+
+
+def _is_drawable_target(
+    elem: ET.Element,
+    drawable_tags: set[str],
+    id_map: dict[str, ET.Element],
+    visited: set[ET.Element],
+) -> bool:
+    if elem in visited:
+        return False
+    visited.add(elem)
+    tag = _strip_ns(elem.tag)
+    if tag not in drawable_tags:
+        return False
+    if tag == "use":
+        ref = _use_href(elem)
+        if not ref:
+            return False
+        target = id_map.get(ref)
+        if target is None:
+            return False
+        return _is_drawable_target(target, drawable_tags, id_map, visited)
+    if tag == "g":
+        for child in list(elem):
+            if _is_drawable_target(child, drawable_tags, id_map, visited):
+                return True
+        return False
+    if tag == "path":
+        return bool(elem.attrib.get("d"))
+    if tag == "circle":
+        return "r" in elem.attrib
+    if tag == "ellipse":
+        return "rx" in elem.attrib and "ry" in elem.attrib
+    if tag == "rect":
+        return "width" in elem.attrib and "height" in elem.attrib
+    if tag == "line":
+        return all(k in elem.attrib for k in ("x1", "y1", "x2", "y2"))
+    if tag in {"polyline", "polygon"}:
+        return "points" in elem.attrib
+    return True
+
+
+def _is_drawable_element(
+    elem: ET.Element,
+    parents: dict[ET.Element, ET.Element],
+    drawable_tags: set[str],
+    id_map: dict[str, ET.Element],
+) -> bool:
+    if _is_in_defs(elem, parents):
+        return False
+    tag = _strip_ns(elem.tag)
+    if tag not in drawable_tags:
+        return False
+    if tag == "use":
+        ref = _use_href(elem)
+        if not ref:
+            return False
+        target = id_map.get(ref)
+        if target is None:
+            return False
+        return _is_drawable_target(target, drawable_tags, id_map, set())
+    if tag == "g":
+        for child in list(elem):
+            if _is_drawable_element(child, parents, drawable_tags, id_map):
+                return True
+        return False
+    if tag == "path":
+        return bool(elem.attrib.get("d"))
+    if tag == "circle":
+        return "r" in elem.attrib
+    if tag == "ellipse":
+        return "rx" in elem.attrib and "ry" in elem.attrib
+    if tag == "rect":
+        return "width" in elem.attrib and "height" in elem.attrib
+    if tag == "line":
+        return all(k in elem.attrib for k in ("x1", "y1", "x2", "y2"))
+    if tag in {"polyline", "polygon"}:
+        return "points" in elem.attrib
+    return True
 
 
 def _parse_duration_ms(value: str | None) -> float | None:
@@ -292,6 +444,7 @@ def parse_svg(path: Path) -> SvgDocument:
         layer = SvgLayer(
             z=int(z),
             asset_key=asset_key,
+            asset_ref=None,
             x=_parse_int(elem.attrib.get("data-wx-x")) or 0,
             y=_parse_int(elem.attrib.get("data-wx-y")) or 0,
             w=_parse_int(elem.attrib.get("data-wx-w")),
@@ -313,18 +466,35 @@ def parse_svg(path: Path) -> SvgDocument:
             "polyline",
             "polygon",
             "g",
+            "use",
         }
+        id_map = {elem.attrib["id"]: elem for elem in root.iter() if "id" in elem.attrib}
+        signature_map: dict[tuple, str] = {}
         index = 0
         for elem in root.iter():
-            if _is_in_defs(elem, parents):
+            if not _is_drawable_element(elem, parents, drawable_tags, id_map):
                 continue
             tag = _strip_ns(elem.tag)
-            if tag not in drawable_tags:
-                continue
-            asset_key = _auto_asset_key(elem.attrib.get("id"), index)
+            if tag == "use":
+                ref_id = _use_href(elem)
+                if ref_id and ref_id in id_map:
+                    asset_key = _auto_asset_key(ref_id, index)
+                else:
+                    asset_key = _auto_asset_key(elem.attrib.get("id"), index)
+            else:
+                asset_key = _auto_asset_key(elem.attrib.get("id"), index)
+            asset_ref = None
+            signature = _signature_for_element(elem, id_map)
+            if signature is not None:
+                existing = signature_map.get(signature)
+                if existing:
+                    asset_ref = existing
+                else:
+                    signature_map[signature] = asset_key
             layer = SvgLayer(
                 z=index,
                 asset_key=asset_key,
+                asset_ref=asset_ref,
                 x=0,
                 y=0,
                 w=None,
